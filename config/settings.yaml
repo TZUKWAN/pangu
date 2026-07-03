@@ -1,0 +1,189 @@
+# 盘古 Pangu — A股短线「情绪+趋势」选股 Agent 配置
+# 所有阈值可调，改这里即可，无需改代码。
+
+# ============ 数据层 ============
+data:
+  source: akshare               # 主数据源（akshare 单库无 token 5/5 覆盖）
+  realtime_fallback: ths_tencent # 实时行情兜底：同花顺 → 腾讯 → 本地缓存
+  multi_source: true            # 启用多源降级（同花顺/新浪/腾讯/adata → 本地快照 → 过期缓存），不使用东财
+  snapshot_dir: data/snapshots  # 每日收盘快照目录
+  cache_dir: data/cache         # 本地缓存目录
+  cache_ttl_minutes: 30         # 行情缓存有效期（分钟）
+  retry:
+    times: 3                    # 失败重试次数
+    backoff_seconds: 2          # 重试退避基数（指数 2^n）
+
+# ============ 情绪温度计（攻防姿态）============
+# 温度 0-100：<40 冰点观望 / 40-85 正常选股 / >85 亢奋警惕见顶
+sentiment:
+  # 各分项权重（合计 1.0）
+  weights:
+    limit_up_count: 0.30        # 涨停家数（越多越亢奋）
+    consecutive_height: 0.25    # 最高连板高度（越高越亢奋）
+    broke_rate: 0.20            # 炸板率（越高越恐慌/分歧）
+    limit_down_count: 0.15      # 跌停家数（越多越恐慌，负向）
+    advance_decline: 0.10       # 涨跌家数比
+  # 涨停家数打分锚点（线性映射到 0-100）
+  limit_up_anchors:
+    cold: 15        # <=15 家 → 偏冷
+    normal: 40
+    hot: 80         # >=80 家 → 亢奋
+    extreme: 120
+  # 连板高度锚点
+  consec_anchors:
+    low: 2
+    mid: 4
+    high: 6
+    extreme: 8
+
+# ============ 趋势选股 ============
+trend:
+  # 板块筛选
+  board:
+    top_n: 10                   # 取热门概念板块前 N（严控日K调用量）
+    lookback_days: 20           # RPS 相对强度回看窗口
+    min_avg_turnover_yi: 5      # 板块日均成交额下限（亿元，过滤流动性差的鬼板块）
+  # 板块轮动持续性过滤
+  sector_rotation:
+    persistence_threshold: 0.25 # 今昨/前3日领涨重合度综合阈值，低于此值对板块排名扣分
+    persistence_penalty: 1.0    # 扣分数值（z-score 量级）
+    persistence_top_n: 5        # 持续性比较时取领涨前 N 名（通常 5，与 sector_top_n 解耦）
+  # 个股趋势形态（全部满足才入选候选池）
+  stock:
+    ma_periods: [5, 10, 20]     # 均线多头排列：MA5 > MA10 > MA20
+    breakout_lookback: 20       # 突破 N 日新高/平台
+    volume_ratio_min: 1.5       # 量比下限（放量）
+    rps_min: 30                 # 个股 20 日 RPS 下限（全市场扫描为主路径，不卡太严）
+    rps_hard_min: 20            # RPS 绝对下限
+    max_per_board: 10           # 每板块最多扫描成分股数
+    fallback_top_n: 600         # 全市场扫描取样数
+    broad_pool_target: 150      # 宽松观察池目标数量
+    broad_pct_min: -3.0         # 观察池最低涨幅
+    broad_rps_hard_min: 20      # 观察池RPS代理下限
+    min_circ_mv_yi: 30          # 流通市值下限（亿元，剔除超小盘流动性风险）
+    max_circ_mv_yi: 2000        # 流通市值上限（亿元，剔除超大盘弹性不足）
+  # 资金面（主力净流入连续性）
+  fund_flow:
+    consecutive_days: 3         # 连续 N 日主力净流入
+    min_daily_inflow_wan: 500   # 单日净流入下限（万元）
+
+# ============ 量化护栏（排雷，宁可错过不可买错）============
+guard:
+  exclude_st: true              # 剔除 ST / *ST / 退市风险
+  exclude_new_days: 0           # 暂不剔除次新（避免逐只日K请求拖垮链路）
+  exclude_one_word_limit: false # 是否剔除一字板（买不到）—— 短线打板可关
+  valuation:
+    pe_max: 200                 # PE 上限（剔除估值泡沫；None=不过滤）
+    pe_min: 0                   # PE 下限（剔除亏损，负 PE 视为亏损）
+    pb_max: 15                  # PB 上限
+  financial_risk:
+    exclude_loss: false         # 暂不剔除最近报告期亏损（新浪财务摘要当前环境不稳定，避免逐只请求拖垮链路）
+    debt_ratio_max: 1.00        # 资产负债率上限关闭（同上）
+  # 可选动量加分（Phase 1 简单版，Phase 2 可接 qlib）
+  momentum_bonus:
+    enabled: false              # Phase 1 默认关，纯趋势选股
+    weight: 0.1
+
+# ============ 买卖点与仓位 ============
+entry_exit:
+  atr_period: 14                # ATR 计算周期
+  breakout_lookback: 20         # 突破位回看天数（前 N 日高点）
+  support_lookback: 10          # 支撑位回看天数（近 N 日低点）
+  resistance_lookback: 60       # 止盈压力位回看天数（前 N 日高点）
+  ma_periods: [5, 10, 20]      # 回踩位均线
+  ma20_stop_buffer: 0.03        # MA20 止损缓冲（MA20 下方 3%）
+  min_stop_pct: 0.015           # 止损与买点最小距离（避免过近）
+  min_risk_pct: 0.005           # 风险 per share 的最小取值（兜底除零）
+  account_size: 1000000         # 默认账户规模（元）
+  base_risk_pct: 0.01           # 单票基础风险（账户的 1%）
+  atr_multiplier: 2.0           # ATR 止损倍数（entry - N×ATR）
+  min_trade_amount: 10000       # 最小成交金额约束（元，避免低价股算不出股数）
+  min_shares: 100               # 最小股数约束（1 手，A股按 100 股取整）
+
+# ============ 结构化 P0 因子（龙虎榜/公告/研报/两融/北向/解禁等）============
+structured_data:
+  enabled: true
+  # 按源分级预算：市场级源优先且预算充足；慢速 per-code 源严格限量。
+  # 东方财富接口不再使用；没有可靠免费替代源的因子必须显式 removed/degraded。
+  total_budget_seconds: 600    # P0 因子采集总预算（秒），确保不因超时跳过数据
+  timeout: 15.0                 # 单个请求超时（秒）
+  workers: 4                    # 并发数
+  deep_candidate_limit: 100     # 需要完整买卖点/技术快照/P0 因子的候选数量
+  deep_max_candidates: 100      # 深度 per-code 源覆盖候选数
+  fund_flow_max_candidates: 100 # 资金流覆盖候选数
+  margin_max_candidates: 100    # 融资融券覆盖候选数
+  research_max_candidates: 50   # 研报覆盖候选数
+  announcements_max_candidates: 100 # 公告覆盖候选数
+  northbound_max_candidates: 50 # 北向覆盖候选数
+  block_trade_max_candidates: 0 # 大宗交易：无免费替代源，已移除
+  holder_num_max_candidates: 0  # 股东户数：无免费替代源，已移除
+  dividend_max_candidates: 50   # 分红覆盖候选数（百度源替代东财）
+  irm_max_candidates: 0
+  min_interval: 0.5             # 接口最小间隔（秒）
+  cache_ttl_hours: 20
+  # 各源开关：同花顺/巨潮/新浪/腾讯源默认启用；
+  #          龙虎榜/两融/大宗/股东户数为东财独占源已移除。
+  dragon_tiger_daily_enabled: true
+  hot_rank_enabled: true
+  limit_up_sentiment_enabled: true
+  capital_flow_120d_enabled: true
+  margin_enabled: false            # 融资融券：无免费替代源，已移除
+  lockup_enabled: true
+  research_enabled: true
+  announcements_enabled: true
+  irm_enabled: false              # 互动易较慢，默认关闭
+  northbound_enabled: true
+  block_trade_enabled: false       # 大宗交易：无免费替代源，已移除
+  holder_num_enabled: false        # 股东户数：无免费替代源，已移除
+  dividend_enabled: true
+
+# ============ 新闻情绪打分（capitalise-finnews 简报解析）============
+news_sentiment:
+  report_dir: data/reports      # FinNews Markdown 简报目录
+  sentiment_window: 300         # 代码上下文窗口（字符数），用于归属题材
+  news_weight: 0.08             # 新闻情绪加分权重（0.05-0.10），仅正面共振时生效
+  # 情感词表可自定义；不填则使用内置默认词表
+  # positive_words: ["上涨", "领涨", "突破", "利好"]
+  # negative_words: ["下跌", "领跌", "调整", "利空"]
+  # risk_words: ["风险", "亏损", "退市", "监管"]
+
+# ============ 选股输出 ============
+output:
+  pick_count: 20                # 核心推荐/辩论数量（减少 debate 耗时）；候选池本身不再硬截断
+  report_dir: data/reports      # Markdown 报告目录（与 news_sentiment 共用）
+  db_path: data/pangu.db        # SQLite 路径
+
+# ============ 回测参数（可选，也可通过 BacktestConfig 直接传参）============
+backtest:
+  initial_capital: 1000000      # 初始资金（元）
+  max_positions: 5              # 最大同时持仓数
+  # 交易成本（A 股真实成本近似）
+  stamp_duty_rate: 0.0005       # 卖出印花税（仅卖出收取）
+  commission_rate: 0.00025      # 双边佣金费率
+  min_commission: 5.0           # 单笔最低佣金（元）
+  slippage_pct: 0.001           # 买卖滑点（成交价比例）
+
+# ============ 独立 Agent（LLM 大脑）============
+llm:
+  api_key: "${ENV:PANGU_LLM_API_KEY}"
+  base_url: "http://218.197.140.7:3001/v1"
+  model: "Qwen3.5-122B-A10B"
+  timeout: 300                                     # 请求超时（秒）
+  providers:
+    - name: qwen
+      api_key_env: PANGU_LLM_API_KEY
+      api_key: "${ENV:PANGU_LLM_API_KEY}"
+      base_url: "http://218.197.140.7:3001/v1"
+      model: "Qwen3.5-122B-A10B"
+      timeout: 300
+    - name: backup
+      enabled: false
+      api_key_env: PANGU_LLM_BACKUP_API_KEY
+      base_url: ""
+      model: ""
+      timeout: 300
+
+# ============ 调度（可选，Phase 1 先手动跑）============
+schedule:
+  enabled: false                # Phase 2 再接 cron/任务调度
+  scan_time: "15:30"            # 每日收盘后扫描

@@ -1,0 +1,46 @@
+{
+  "presets": [
+    {
+      "name": "DeepSeek",
+      "base_url": "https://api.deepseek.com",
+      "api_key_env": "PANGU_DEEPSEEK_KEY",
+      "models": ["deepseek-chat", "deepseek-reasoner"],
+      "doc_url": "https://api-docs.deepseek.com"
+    },
+    {
+      "name": "Qwen(通义)",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "api_key_env": "PANGU_QWEN_KEY",
+      "models": ["qwen-plus", "qwen-max", "qwen-turbo"],
+      "doc_url": "https://help.aliyun.com/zh/dashscope"
+    },
+    {
+      "name": "GLM(智谱)",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "api_key_env": "PANGU_GLM_KEY",
+      "models": ["glm-4-plus", "glm-4-flash", "glm-4-air"],
+      "doc_url": "https://open.bigmodel.cn/dev/api"
+    },
+    {
+      "name": "豆包(火山)",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "api_key_env": "PANGU_DOUBAO_KEY",
+      "models": ["doubao-pro", "doubao-lite"],
+      "doc_url": "https://www.volcengine.com/docs/82379"
+    },
+    {
+      "name": "Kimi(月之暗面)",
+      "base_url": "https://api.moonshot.cn/v1",
+      "api_key_env": "PANGU_KIMI_KEY",
+      "models": ["moonshot-v1-8k", "moonshot-v1-32k"],
+      "doc_url": "https://platform.moonshot.cn/docs"
+    },
+    {
+      "name": "OpenAI",
+      "base_url": "https://api.openai.com/v1",
+      "api_key_env": "PANGU_OPENAI_KEY",
+      "models": ["gpt-4o", "gpt-4o-mini"],
+      "doc_url": "https://platform.openai.com/docs"
+    }
+  ]
+}

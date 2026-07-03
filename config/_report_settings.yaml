@@ -1,0 +1,118 @@
+data:
+  source: akshare
+  realtime_fallback: ashare
+  multi_source: false
+  snapshot_dir: data/snapshots
+  cache_dir: data/cache
+  cache_ttl_minutes: 30
+  retry:
+    times: 3
+    backoff_seconds: 2
+sentiment:
+  weights:
+    limit_up_count: 0.3
+    consecutive_height: 0.25
+    broke_rate: 0.2
+    limit_down_count: 0.15
+    advance_decline: 0.1
+  limit_up_anchors:
+    cold: 15
+    normal: 40
+    hot: 80
+    extreme: 120
+  consec_anchors:
+    low: 2
+    mid: 4
+    high: 6
+    extreme: 8
+trend:
+  board:
+    top_n: 30
+    lookback_days: 20
+    min_avg_turnover_yi: 5
+  sector_rotation:
+    persistence_threshold: 0.25
+    persistence_penalty: 1.0
+    persistence_top_n: 5
+  stock:
+    ma_periods:
+    - 5
+    - 10
+    - 20
+    breakout_lookback: 20
+    volume_ratio_min: 1.5
+    rps_min: 60
+    rps_hard_min: 45
+    max_per_board: 50
+    fallback_top_n: 200
+    min_circ_mv_yi: 30
+    max_circ_mv_yi: 2000
+  fund_flow:
+    consecutive_days: 3
+    min_daily_inflow_wan: 500
+guard:
+  exclude_st: true
+  exclude_new_days: 5
+  exclude_one_word_limit: false
+  valuation:
+    pe_max: 200
+    pe_min: 0
+    pb_max: 15
+  financial_risk:
+    exclude_loss: true
+    debt_ratio_max: 0.8
+  momentum_bonus:
+    enabled: false
+    weight: 0.1
+entry_exit:
+  atr_period: 14
+  breakout_lookback: 20
+  support_lookback: 10
+  resistance_lookback: 60
+  ma_periods:
+  - 5
+  - 10
+  - 20
+  ma20_stop_buffer: 0.03
+  min_stop_pct: 0.015
+  min_risk_pct: 0.005
+  account_size: 1000000
+  base_risk_pct: 0.01
+  atr_multiplier: 2.0
+  min_trade_amount: 10000
+  min_shares: 100
+news_sentiment:
+  report_dir: data/reports
+  sentiment_window: 300
+  news_weight: 0.08
+output:
+  pick_count: 100
+  report_dir: data/reports
+  db_path: data/pangu.db
+backtest:
+  initial_capital: 1000000
+  max_positions: 5
+  stamp_duty_rate: 0.0005
+  commission_rate: 0.00025
+  min_commission: 5.0
+  slippage_pct: 0.001
+llm:
+  api_key: ''
+  base_url: https://api.deepseek.com
+  model: deepseek-v4-flash
+  timeout: 300
+  providers:
+  - name: deepseek
+    api_key_env: PANGU_LLM_API_KEY
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+    timeout: 300
+  - name: backup
+    enabled: false
+    api_key_env: PANGU_LLM_BACKUP_API_KEY
+    base_url: ''
+    model: ''
+    timeout: 300
+schedule:
+  enabled: false
+  scan_time: '15:30'

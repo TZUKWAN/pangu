@@ -1,0 +1,51 @@
+# Pangu A-share decision assistant
+
+# Python / JS dependencies and caches
+.venv/
+venv/
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local assistant/tool state
+.aionrs/
+.claude/
+.codex/
+.kimi/
+.qwen/
+CLAUDE_STATE.md
+
+# Local market data, reports, runtime artifacts, and DB files
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+
+# Large third-party reference repositories and research dumps
+_refs/
+audit/
+
+# Secrets and local overrides
+.env
+.env.*
+data/llm_providers.json
+data/.llm_secrets.json
+data/llm_models_cache.json
+
+# Logs, screenshots, and temporary probes
+*.log
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.mp4
+*_probe.txt
+*_web.log
+page_screenshot.*
+dashboard.*
+new_page.*
