@@ -35,7 +35,9 @@ from fastapi.staticfiles import StaticFiles
 from ..config import build_data_loader, load_config, save_llm_providers, save_strategy_settings
 from ..agent.debate import get_agent_prompts
 from ..data_loader import find_col, safe_float
+from ..market_phase import MarketPhaseAnalyzer
 from ..pipeline import Pipeline
+from ..strategy_pools import run_all_pools
 
 logger = logging.getLogger("pangu.web")
 
@@ -1242,6 +1244,28 @@ async def api_market_breadth():
     return MarketRanking(dl=_get_dl()).get_market_breadth()
 
 
+@app.get("/api/market/phase")
+async def api_market_phase(date: Optional[str] = Query(None, description="YYYYMMDD，默认今天")):
+    """返回当前市场阶段/情绪周期（独立接口，不触发扫描）。"""
+    try:
+        phase = MarketPhaseAnalyzer(_get_dl(), load_config()).analyze(date)
+        return phase.to_dict()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("市场阶段识别失败: %s", e)
+        raise HTTPException(500, f"市场阶段识别失败: {e}")
+
+
+@app.get("/api/market/pools")
+async def api_market_pools(date: Optional[str] = Query(None, description="YYYYMMDD，默认今天")):
+    """返回七大策略池原始信号（独立接口，不触发扫描，可能较慢）。"""
+    try:
+        results = run_all_pools(_get_dl(), load_config(), date)
+        return {name: [s.to_dict() for s in sigs] for name, sigs in results.items()}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("策略池运行失败: %s", e)
+        raise HTTPException(500, f"策略池运行失败: {e}")
+
+
 @app.get("/api/reports")
 async def api_reports():
     """列出历史报告（data/reports/*.json + *.md）。P0 JSON 优先作为代表。"""
@@ -1338,14 +1362,15 @@ async def api_report_md(date: str):
 # ---------------------------------------------------------------------- #
 @app.get("/api/llm/summary")
 async def api_llm_summary(date: Optional[str] = Query(None)):
-    """SSE 流式输出 LLM 盘面解读。
+    """SSE 流式输出 AI 摘要/解读（非决策）。
 
+    该接口仅基于已有选股结果生成 200-400 字展望，不重新选股，也不修改推荐。
     前端用 EventSource 监听，data 字段是逐段文本增量。
     失败（无 key / 无数据）会推一条 [error] 事件。
     """
     global _latest_result
 
-    def _build_messages() -> tuple[list[dict[str, str]], str]:
+    def _build_messages() -> tuple[list[dict[str, str]], str, dict[str, Any]]:
         # 1. 取选股数据
         data = _latest_result
         if data is None:
@@ -1358,7 +1383,8 @@ async def api_llm_summary(date: Optional[str] = Query(None)):
         pipeline_json = json.dumps(data, ensure_ascii=False)[:6000]  # 截断防爆
         user_prompt = (
             f"下面是盘古选股引擎基于今日收盘盘面分析的结果（JSON）。"
-            f"请为用户写一段「明日操作展望」，200-400 字，口语化，重点说明：\n"
+            f"请为用户写一段「AI 摘要/明日解读」，200-400 字，口语化。"
+            f"这是总结性摘要，不是新的选股决策。重点说明：\n"
             f"1. 今日情绪温度和姿态对明日的指引、明日是否值得出手\n"
             f"2. 如果有候选股，挑明日最值得关注的 2-3 只简评（推荐度/买点/风险）；"
             f"如果没有候选股，说明为什么建议明日观望\n"
@@ -1369,12 +1395,18 @@ async def api_llm_summary(date: Optional[str] = Query(None)):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_prompt},
         ]
-        return messages, data.get("date", "")
+        meta = {
+            "summary_only": True,
+            "decision_mode": "summary",
+            "report_date": data.get("date", ""),
+            "recommendation_allowed": data.get("recommendation_allowed", False),
+        }
+        return messages, data.get("date", ""), meta
 
     def _event_stream():
         """生成 SSE 事件流。"""
         try:
-            messages, _ = _build_messages()
+            messages, _, meta = _build_messages()
         except RuntimeError as e:
             yield _sse("error", str(e))
             return
@@ -1388,7 +1420,7 @@ async def api_llm_summary(date: Optional[str] = Query(None)):
             cfg = load_config()
             client = build_llm_client(cfg)
         except ValueError as e:
-            yield _sse("error", f"LLM 未配置：{e}（请在 config/settings.yaml 配 llm 段）")
+            yield _sse("error", f"LLM 未配置：{e}（请在 config/settings.yaml 配 llm 段或设置环境变量）")
             return
         except Exception as e:  # noqa: BLE001
             yield _sse("error", f"LLM 客户端构造失败: {e}")
@@ -1396,10 +1428,10 @@ async def api_llm_summary(date: Optional[str] = Query(None)):
 
         # 流式推送
         try:
-            yield _sse("start", "")
+            yield _sse("start", json.dumps(meta, ensure_ascii=False))
             for piece in client.stream_chat(messages, temperature=0.6):
                 yield _sse("delta", piece)
-            yield _sse("done", "")
+            yield _sse("done", json.dumps(meta, ensure_ascii=False))
         except Exception as e:  # noqa: BLE001
             yield _sse("error", f"流式生成中断: {e}")
 
@@ -1411,6 +1443,35 @@ async def api_llm_summary(date: Optional[str] = Query(None)):
             "X-Accel-Buffering": "no",  # 禁用 nginx 缓冲
         },
     )
+
+
+@app.post("/api/llm/review")
+async def api_llm_review():
+    """LLM 复核最新选股结果，检查候选池质量和推荐合法性。
+
+    返回是否允许推荐、复核理由、以及检测到的主要问题。
+    """
+    global _latest_result
+    data = _latest_result or _find_latest_report()
+    if data is None:
+        raise HTTPException(404, "暂无选股数据")
+
+    try:
+        from ..agent.core import PanguAgent
+        cfg = load_config()
+        agent = PanguAgent.from_config(cfg)
+        review = agent.agent_review(data)
+        return {
+            "approved": review.get("approved", False),
+            "review_text": review.get("review_text", ""),
+            "llm_called": review.get("llm_called", False),
+            "error": review.get("error"),
+            "report_date": data.get("date"),
+            "recommendation_allowed": data.get("recommendation_allowed", False),
+        }
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, f"复核失败: {e}")
+
 
 
 # ---------------------------------------------------------------------- #

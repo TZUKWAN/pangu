@@ -1,147 +1,136 @@
 # 盘古 Pangu · 使用指南
 
-> A股短线「情绪+趋势」选股系统 · CLI 交互式
+> A股盘后选股决策辅助系统 · 规则选股为主，LLM 只做解读/复核
 
-## 🚀 启动（一条命令）
+## 启动
 
 ```bash
 cd D:/交易智能体
-python -m engine.repl          # 或 python -m engine.cli repl
+python -m engine.repl
 ```
 
-进入交互菜单：
-```
-╭──────────────────────────────────────╮
-│   1. 📊 今日市场速览                   │
-│   2. 🎯 今日推荐（选股+排序+概率）     │
-│   3. 🤖 AI选股（LLM综合分析）          │
-│   4. 💼 持仓管理                       │
-│   5. 🔬 回测                           │
-│   6. 📰 读财经简报                     │
-│   7. ⚙️  RPS预计算                     │
-│   0. 退出                              │
-╰──────────────────────────────────────╯
-```
-
-## 📋 日常使用流程
+## 日常使用流程
 
 ### 第一次用 / 每个交易日盘后
+
 ```bash
-python -m engine.cli rps-build          # ① 更新真实RPS（约1-2分钟，必做）
-python -m engine.cli calibrate          # ② 校准上涨概率（首次10-30分钟，可选但推荐）
-```
-> 这两个是离线预计算，让推荐的概率更准。跑一次存库，之后 scan 自动用。
-
-### 日常选股（菜单2）
-输入 `2`，系统自动跑：情绪→趋势→护栏→买卖点→**推荐排序**，输出：
-
-```
-等级  代码     名称      推荐度  上涨概率  预测涨幅   盈亏比  买点    止损    理由
- A   603698  航天工程   83.4    64%     4.4-9.8%  2.0   43.55  39.26  资金流入+突破+多头排列
- B   002430  杭氧股份   63.3    57%     4.3-9.6%  2.0   29.26  26.50  突破+多头排列
- ...
-✓=概率已校准（无✓为模型估算，参考用）  等级：S优/A佳/B可/C慎
+python -m engine.cli rps-build --workers 10    # 预计算全市场真实 RPS（必做）
 ```
 
-然后输入股票代码可深度查看买卖点（买点/止损/止盈/仓位）。
+> 未运行 RPS 预计算时，系统只会输出观察池，不会生成正式推荐。
 
-### AI 深度分析（菜单3）
-输入 `3`，向盘古独立 Agent 提问（如"今天买什么"），Agent 会调工具做完整分析，输出含逻辑/买点/止损/风险的报告。
+### 查看市场状态
 
-### 持仓跟踪（菜单4）
-买入后记录，实时看浮盈：
-```
-[2] 买入 → 输入代码/数量/价格
-[1] 查看持仓 → 实时盈亏表
-[5] 总览统计 → 胜率/总盈亏/平均持仓天数
-```
-
-## 🎯 推荐引擎说明（核心）
-
-每只推荐股包含：
-
-| 字段 | 含义 | 说明 |
-|------|------|------|
-| **等级** | S/A/B/C | S≥85最优 / A≥70佳 / B≥55可 / C<55慎 |
-| **推荐度** | 0-100 | 多维加权：趋势强度35%+资金面25%+形态20%+盈亏比10%+风控10% |
-| **上涨概率** | 0-100% | 5日内上涨概率。✓=已用历史数据校准（准）；无✓=模型估算（参考） |
-| **预测涨幅** | X-Y% | 基于历史相似特征的涨幅区间（保守-乐观） |
-| **盈亏比** | 倍数 | 止盈距离/止损距离，≥2:1 才推荐 |
-| **买点** | 价格 | 主买点（突破位/回踩位/支撑位） |
-| **止损** | 价格 | ATR/结构/MA20 动态选最合理的 |
-| **理由** | 4-8字 | 趋势强+资金流入+突破+放量 等关键词组合 |
-
-**评分维度**（透明可调，见 `config/settings.yaml` 的 recommender.weights）：
-- 趋势强度(RPS) 35%：相对强度是短线第一指标
-- 资金面(主力流入) 25%：增量资金=上涨燃料
-- 形态质量 20%：均线多头+突破+放量
-- 盈亏比 10%：交易性价比
-- 风险控制 10%：换手率适中得分高
-
-## ⚙️ 配置调参
-
-`config/settings.yaml` 可调所有阈值（情绪锚点/RPS门槛/市值区间/盈亏比/推荐权重等），改文件即可。
-
-LLM 配置在 `config/settings.yaml` 的 `llm` 段（支持 DeepSeek/Qwen/GLM/豆包/Kimi/OpenAI 等 OpenAI 兼容接口）。
-**安全提示**：不要把真实 `api_key` 写入配置文件提交仓库，推荐通过环境变量 `PANGU_LLM_API_KEY` 传入；配置文件支持 `${ENV:NAME}` 占位符。
-
-### 每日盘后调度
 ```bash
-python -m engine.cli daily                   # 一键跑 RPS → 快照 → 扫描 → 报告 → 通知
-python -m engine.cli daily --dry-run         # 检查配置/通知，不执行耗时取数
+python -m engine.cli sentiment                 # 情绪温度
+python -m engine.cli market-phase              # 市场阶段/情绪周期
 ```
-通知配置（可选）：
+
+### 查看策略池信号
+
 ```bash
-export PANGU_NOTIFY_WEBHOOK="https://..."    # Bark / Server酱 / 飞书 / 企业微信 / 钉钉 等 webhook
-```
-未配置时通知自动跳过，不会误发。
-
-## 🧪 验证状态
-
-- ✅ **100 个单元测试全过**（pytest -k "not live"）
-- ✅ **REPL 7 个菜单全部端到端验证**：
-  - 菜单1 市场速览（情绪温度+分项）
-  - 菜单2 今日推荐（推荐度排序+上涨概率+预测涨幅+理由）
-  - 菜单3 AI选股（独立 Agent 调工具分析）
-  - 菜单4 持仓管理（买卖+实时盈亏+总览）
-  - 菜单5 回测（胜率/收益率/最大回撤/夏普/基准对比）
-  - 菜单6 财经简报（Markdown 渲染）
-  - 菜单7 RPS预计算（5507只/64.8s）
-- ✅ 推荐引擎真实数据：推荐度+概率+涨幅+等级+理由
-- ✅ 概率校准：calibrator 历史统计，推荐带 ✓ 校准标记
-- ✅ 回测：真实数据验证（胜率75%、回撤0.51%）
-
-### 回测结果字段说明
-`BacktestResult.to_dict()` 的关键统计在 `summary` 子字典：
-```
-result.summary  # 或 to_dict()['summary']
-  - total_return_pct    总收益率%
-  - win_rate_pct        胜率%
-  - max_drawdown_pct    最大回撤%
-  - sharpe_ratio        夏普比率
-  - benchmark_return_pct 基准(沪深300)收益%
+python -m engine.cli pools                     # 七大策略池原始信号
 ```
 
-## ⚠️ 重要提醒
+### 跑完整选股链路
 
-- 系统是**决策助手，不保证收益**。月13-20%是高波动风格，盈亏取决于你的执行与风控
-- 上涨概率/预测涨幅是**统计估算**，不是确定性预测，盈亏自负
-- 短线个股上涨概率天然较低（~50%），64%已属优秀
-- 每个交易日盘后务必跑 `rps-build` 更新数据
+```bash
+python -m engine.cli scan                      # 输出 JSON（含 source_status / final_recommendations / watchlist）
+python -m engine.cli report                    # 生成 Markdown 简报
+```
 
-## 🔧 命令速查
+输出结构：
+
+```json
+{
+  "date": "20250115",
+  "sentiment": {...},
+  "market_modules": {
+    "market_phase": {
+      "market_phase": "主升期",
+      "phase_score": 80,
+      "allowed_strategies": [...],
+      "forbidden_strategies": [...],
+      "position_advice": "积极仓位，聚焦主线"
+    },
+    ...
+  },
+  "candidates": [...],            # 严格候选（含 debate / xuanwu）
+  "watchlist": [...],             # 观察池，不进入最终推荐
+  "rejected": [...],              # 被护栏剔除
+  "final_recommendations": [...], # 通过六道闸门的最终推荐
+  "source_status": {...},         # 各数据源健康状态
+  "recommendation_allowed": true,
+  "warnings": [...]
+}
+```
+
+### 每日盘后一键调度
+
+```bash
+python -m engine.cli daily                     # RPS → 快照 → 扫描 → 报告
+python -m engine.cli daily --dry-run           # 只检查配置/通知
+```
+
+## 推荐引擎说明
+
+系统通过以下流程生成最终推荐：
+
+1. **市场状态识别**（market_phase）
+2. **7 类策略池产出候选信号**（strategy_pools）
+3. **量化护栏过滤风险票**（quant_guard：kept / watch / rejected）
+4. **最终推荐闸门六道检查**（recommendation_gate）
+5. **LLM 解读/复核**（仅当配置启用且候选通过闸门后）
+
+只有同时通过数据、市场、题材、个股地位、交易计划、风险六道闸门的股票，才会进入 `final_recommendations`。
+
+当以下任一情况发生时，系统会输出“今日无正式推荐”：
+
+- 真实 RPS 缺失
+- 关键数据源失败
+- 市场状态为冰点期/退潮期
+- 没有候选通过全部闸门
+- LLM 复核明确拒绝
+
+## 配置调参
+
+`config/settings.yaml` 可调所有阈值：
+
+- `trend.rps.require_real` / `allow_approx`：RPS 硬前置
+- `strategy_framework.enabled`：启用策略框架
+- `strategy_framework.pools`：启用的策略池列表
+- `guard.*`：风险护栏阈值
+- `entry_exit.*`：买卖点参数
+- `llm.*`：LLM 环境变量配置
+
+**安全提示**：不要把真实 API key 写入配置文件，使用环境变量 `PANGU_LLM_API_KEY` / `PANGU_LLM_BASE_URL` / `PANGU_LLM_MODEL`。
+
+## 验证状态
+
+- 277 个纯逻辑单元测试全过：`python -m pytest engine/tests/ -q --ignore=engine/tests/test_pipeline_live.py`
+- Live 冒烟测试：`python -m pytest engine/tests/test_pipeline_live.py -q`（需网络）
+
+## 重要提醒
+
+- 系统是**决策辅助工具，不保证收益，不自动交易**。
+- 所有概率/推荐度字段未经过样本外回测校准时，**不得视为真实胜率**。
+- 短线个股天然高风险，所有输出仅作为次日开盘前的观察参考。
+- 每个交易日盘后务必跑 `rps-build` 更新真实 RPS。
+
+## 命令速查
 
 | 命令 | 作用 |
 |------|------|
-| `python -m engine.repl` | 交互式菜单（日常主入口） |
-| `python -m engine.cli rps-build` | 预计算真实RPS（盘后必做） |
-| `python -m engine.cli calibrate` | 校准上涨概率（首次慢） |
-| `python -m engine.cli scan` | 完整选股→JSON（脚本用） |
-| `python -m engine.cli report` | 生成Markdown选股报告 |
-| `python -m engine.cli daily` | 每日盘后一键调度（RPS→快照→扫描→报告→通知） |
-| `python -m engine.cli sentiment` | 只看情绪温度 |
-| `pytest -k "not live"` | 跑100个单元测试 |
+| `python -m engine.repl` | 交互式菜单 |
+| `python -m engine.cli rps-build` | 预计算真实 RPS |
+| `python -m engine.cli sentiment` | 情绪温度 |
+| `python -m engine.cli market-phase` | 市场阶段 |
+| `python -m engine.cli pools` | 七大策略池 |
+| `python -m engine.cli scan` | 完整选股链路 → JSON |
+| `python -m engine.cli report` | 生成 Markdown 报告 |
+| `python -m engine.cli daily` | 每日盘后一键调度 |
+| `python -m engine.web` | 启动 Web 看板 |
 
 ---
 
-*盘古 Pangu · 用情绪和趋势，在A股短线里找到该出手的时刻。*
+*盘古 Pangu · 用真实数据和明确规则，把 A 股选股变成可解释、可审计、可拒绝的过程。*

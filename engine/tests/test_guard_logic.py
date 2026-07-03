@@ -44,9 +44,9 @@ def test_exclude_st():
     g = QuantGuard(StubDL(spot), {"exclude_st": True, "exclude_loss": False, "debt_ratio_max": 1.0})
     c = make_candidate(name="ST测试")
     r = g.filter([c])
-    # 软护栏：保留候选但标记风险，前端根据风险标签过滤
-    assert len(r.kept) == 1
-    assert any("ST" in flag for flag in r.kept[0].risk_flags)
+    # 硬护栏：ST 被明确剔除，不得进入 kept
+    assert len(r.kept) == 0
+    assert len(r.rejected) == 1
     assert "ST" in r.rejected[0]["reason"]
 
 
@@ -54,8 +54,8 @@ def test_exclude_high_pe():
     spot = pd.DataFrame({"代码": ["000001"], "名称": ["测试"], "市盈率-动态": [500], "市净率": [2]})
     g = QuantGuard(StubDL(spot), {"exclude_st": True, "pe_max": 200, "exclude_loss": False, "debt_ratio_max": 1.0})
     r = g.filter([make_candidate()])
-    assert len(r.kept) == 1
-    assert any("估值过高" in flag for flag in r.kept[0].risk_flags)
+    assert len(r.kept) == 0
+    assert len(r.rejected) == 1
     assert "估值过高" in r.rejected[0]["reason"]
 
 
@@ -63,8 +63,8 @@ def test_exclude_loss_pe_negative():
     spot = pd.DataFrame({"代码": ["000001"], "名称": ["测试"], "市盈率-动态": [-50], "市净率": [2]})
     g = QuantGuard(StubDL(spot), {"exclude_st": True, "pe_min": 0, "exclude_loss": True, "debt_ratio_max": 1.0})
     r = g.filter([make_candidate()])
-    assert len(r.kept) == 1
-    assert any("亏损" in flag for flag in r.kept[0].risk_flags)
+    assert len(r.kept) == 0
+    assert len(r.rejected) == 1
     assert "亏损" in r.rejected[0]["reason"]
 
 
@@ -82,12 +82,21 @@ def test_exclude_high_debt():
     fin = pd.DataFrame({"资产负债率(%)": [90]})
     g = QuantGuard(StubDL(spot, fin_df=fin), {"exclude_st": True, "pe_max": 200, "exclude_loss": False, "debt_ratio_max": 0.80})
     r = g.filter([make_candidate()])
-    assert len(r.kept) == 1
-    assert any("资产负债率" in flag for flag in r.kept[0].risk_flags)
+    assert len(r.kept) == 0
+    assert len(r.rejected) == 1
     assert "资产负债率" in r.rejected[0]["reason"]
 
 
 def test_guard_result_to_dict():
-    r = GuardResult(kept=[], rejected=[{"code": "1", "name": "x", "reason": "y"}])
+    r = GuardResult(kept=[], watch=[], rejected=[{"code": "1", "name": "x", "reason": "y"}])
     d = r.to_dict()
     assert d["rejected"][0]["reason"] == "y"
+
+
+def test_watch_on_missing_valuation():
+    spot = pd.DataFrame({"代码": ["000001"], "名称": ["测试"]})
+    g = QuantGuard(StubDL(spot), {"exclude_st": True, "pe_max": 200, "exclude_loss": False, "debt_ratio_max": 1.0})
+    r = g.filter([make_candidate()])
+    assert len(r.kept) == 0
+    assert len(r.watch) == 1
+    assert any("估值数据缺失" in flag for flag in r.watch[0].risk_flags)

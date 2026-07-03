@@ -25,6 +25,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -56,10 +57,15 @@ class StockCandidate:
     turnover_rate: float     # 换手率 %
     circ_mv_yi: float        # 流通市值（亿元）
     rps: float               # 20 日相对强度百分位
+    rps_mode: str = "unavailable"  # real / approximate / unavailable
     reasons: list[str] = field(default_factory=list)  # 入选理由
     fund_inflow_days: int = 0  # 主力连续净流入天数
+    fund_flow_status: str = "unavailable"  # available / snapshot_only / unavailable
+    fund_flow_date: Optional[str] = None   # 资金流数据日期
+    fund_flow_net: Optional[float] = None  # 当日主力净流入（万元）
     score: float = 0.0       # 综合趋势得分（用于排序）
     risk_flags: list[str] = field(default_factory=list)  # 护栏风险标记（不剔除，仅降权）
+    is_watchlist: bool = False  # 是否来自宽松观察池
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,10 +77,15 @@ class StockCandidate:
             "turnover_rate": round(self.turnover_rate, 2),
             "circ_mv_yi": round(self.circ_mv_yi, 2),
             "rps": round(self.rps, 1),
+            "rps_mode": self.rps_mode,
             "fund_inflow_days": self.fund_inflow_days,
+            "fund_flow_status": self.fund_flow_status,
+            "fund_flow_date": self.fund_flow_date,
+            "fund_flow_net": round(self.fund_flow_net, 2) if self.fund_flow_net is not None else None,
             "reasons": self.reasons,
             "score": round(self.score, 2),
             "risk_flags": self.risk_flags,
+            "is_watchlist": self.is_watchlist,
         }
 
 
@@ -134,36 +145,57 @@ class TrendScanner:
         # 板块历史（用于轮动持续性）
         self.history = HistoryKeeper(self.cfg.get("history_dir", "data/cache"))
 
+        # RPS 模式配置（由 pipeline/settings 注入）
+        rps_cfg = self.cfg.get("rps", {})
+        self.require_real_rps: bool = rps_cfg.get("require_real", True)
+        self.allow_approx_rps: bool = rps_cfg.get("allow_approx", False)
+        self.rps_date: Optional[str] = None
         # 真实 RPS 查表（由 pipeline 注入，rps.compute_all_rps 预计算）。
-        # 为空时 _rps 回退到旧的近似版（带 warning）。
         self.rps_map: dict[str, float] = {}
 
+        # 资金流历史快照目录：用于计算连续净流入天数
+        self.fund_flow_dir = Path(self.cfg.get("fund_flow_dir", "data/fund_flow"))
+        self.fund_flow_dir.mkdir(parents=True, exist_ok=True)
         # 个股资金流全市场排名缓存：避免 scan 阶段每只票都发起一次网络请求
         self._ff_cache: Optional[pd.DataFrame] = None
         # 同花顺人气榜概念映射：_rank_boards 构建，供全市场扫描候选回填板块。
         self._code_board_map: dict[str, str] = {}
         self._code_board_tags: dict[str, list[str]] = {}
 
-    def set_rps_map(self, rps_map: dict[str, float]) -> None:
+    def set_rps_map(self, rps_map: dict[str, float], date: Optional[str] = None) -> None:
         """注入预计算的真实 RPS 表（code -> rps 0-100）。"""
         self.rps_map = rps_map or {}
+        self.rps_date = date
 
     # ------------------------------------------------------------------ #
     def scan(self, date: Optional[str] = None) -> TrendResult:
         res = TrendResult(boards=[], candidates=[])
+        scan_date = date or datetime.now().strftime("%Y%m%d")
         # 注意：all_spot 仅支持实时快照，没有历史日期参数。
-        # 用 --date 做历史回看时，这里拿到的仍是今天数据，是已知限制。
-        # 历史收盘价应从 daily_kline(date) 取，市值/PE 等字段暂用当日近似。
+        # 历史模式下如果只有实时快照，必须标记 historical_mode=incomplete。
         spot = self.dl.all_spot()
         if len(spot) == 0:
             res.warnings.append("实时行情为空，无法扫描趋势")
             return res
 
-        # 预建全市场 RPS（相对强度）基准：用当日涨跌幅+换手近似还不够，
-        # 严谨 RPS 需要 20 日累计涨幅排名百分位。这里用「近 N 日累计涨幅」近似。
-        # 为控制耗时，RPS 用当日可得的快照指标 + 板块成分股补算。
-        boards = self._rank_boards(spot, date=date)
-        res.boards = boards
+        # RPS 硬前置：真实 RPS 表缺失时，默认阻断正式候选池。
+        real_rps_available = bool(self.rps_map)
+        if self.require_real_rps and not real_rps_available:
+            res.warnings.append(
+                "未检测到真实 RPS 表，严格候选池已阻断。建议先运行："
+                "python -m engine.cli rps-build --workers 10"
+            )
+            logger.warning("真实 RPS 缺失，严格候选池阻断（require_real_rps=True）")
+            # 仅保留观察池逻辑，不生成正式候选
+            boards = self._rank_boards(spot, date=date)
+            res.boards = boards
+            # 继续执行以填充观察池
+        else:
+            boards = self._rank_boards(spot, date=date)
+            res.boards = boards
+
+        # 保存当日资金流快照，供未来计算连续净流入天数
+        self.save_fund_flow_snapshot(scan_date)
 
         seen: set[str] = set()
         # ── 全市场扫描作为主路径（不依赖不稳定的板块成分股接口）──
@@ -602,9 +634,12 @@ class TrendScanner:
                 score += 20
 
         # 4. RPS（20 日累计涨幅在全市场的百分位）
-        rps = _rps(code, closes, spot, self.rps_map)
+        rps, rps_mode = self._lookup_rps(code, closes, spot)
         if rps < self.rps_hard_min:
             # 绝对弱势，直接淘汰
+            return None
+        if rps_mode == "approximate" and not self.allow_approx_rps:
+            # 严格模式下，近似 RPS 不能进入严格候选池
             return None
         if rps >= self.rps_min:
             reasons.append(f"20日 RPS {rps:.0f}（相对强势）")
@@ -617,43 +652,146 @@ class TrendScanner:
             return None
 
         # 5. 资金确认（连续净流入）
-        inflow_days = self._fund_inflow_days(code)
+        ff_info = self._fund_flow_info(code)
+        inflow_days = ff_info.get("inflow_days", 0)
+        fund_flow_status = ff_info.get("status", "unavailable")
+        fund_flow_date = ff_info.get("date")
+        fund_flow_net = ff_info.get("net")
         if inflow_days >= self.fund_days:
             reasons.append(f"主力连续 {inflow_days} 日净流入")
             score += 10
+        elif fund_flow_status == "snapshot_only" and fund_flow_net is not None and fund_flow_net > self.fund_min_inflow:
+            reasons.append(f"当日主力净流入 {fund_flow_net:.0f} 万元")
         # 资金不达标不淘汰，但加分少（避免错过刚启动的票）
 
         return StockCandidate(
             code=code, name=name, board=board_name,
             close=close, pct_change=pct, turnover_rate=turnover,
-            circ_mv_yi=circ_mv_yi, rps=rps, reasons=reasons,
-            fund_inflow_days=inflow_days, score=score,
+            circ_mv_yi=circ_mv_yi, rps=rps, rps_mode=rps_mode,
+            reasons=reasons,
+            fund_inflow_days=inflow_days, fund_flow_status=fund_flow_status,
+            fund_flow_date=fund_flow_date, fund_flow_net=fund_flow_net,
+            score=score,
         )
 
     # ------------------------------------------------------------------ #
-    def _fund_inflow_days(self, code: str) -> int:
-        """主力连续净流入天数（复用全市场排名缓存，避免逐只请求）。"""
+    def _fund_flow_info(self, code: str) -> dict[str, Any]:
+        """返回个股资金流信息：{inflow_days, status, date, net}。
+
+        status:
+            available: 有当日快照 + 至少前一日的历史快照，可计算连续天数。
+            snapshot_only: 只有当日快照，无法计算连续天数（不宣称连续净流入）。
+            unavailable: 当日快照缺失。
+        """
+        code = str(code or "").strip().zfill(6)
+        # 1. 取当日全市场资金流快照
         if self._ff_cache is None:
             try:
-                self._ff_cache = self.dl.individual_fund_flow("即时", fast=True)
+                self._ff_cache = self.dl.all_fund_flow_snapshot(fast=True)
             except Exception as e:  # noqa: BLE001
-                logger.debug("individual_fund_flow cache fill failed: %s", e)
+                logger.debug("all_fund_flow_snapshot cache fill failed: %s", e)
                 self._ff_cache = pd.DataFrame()
         ff = self._ff_cache
         if ff is None or len(ff) == 0:
-            return 0
+            return {"inflow_days": 0, "status": "unavailable", "date": None, "net": None}
+
         code_col = _find_col(ff, ["股票代码", "代码"])
         if code_col is None:
-            return 0
-        row = ff[ff[code_col].astype(str).str.strip().str.zfill(6) == code.zfill(6)]
+            return {"inflow_days": 0, "status": "unavailable", "date": None, "net": None}
+        row = ff[ff[code_col].astype(str).str.strip().str.zfill(6) == code]
         if len(row) == 0:
-            return 0
+            return {"inflow_days": 0, "status": "unavailable", "date": None, "net": None}
+
         net_col = _find_col(row, ["主力净流入-净额", "净额"])
         if net_col is None:
-            return 0
+            return {"inflow_days": 0, "status": "unavailable", "date": None, "net": None}
         net = _num(row.iloc[0].get(net_col))
-        # 快照只有最新一日，无法计算连续天数；以当日净流入代替
-        return 1 if net > self.fund_min_inflow else 0
+        today = datetime.now().strftime("%Y%m%d")
+        date_col = _find_col(row, ["日期", "date"])
+        if date_col:
+            today = str(row.iloc[0].get(date_col, today)).replace("-", "")
+
+        # 只有当日快照，先返回 snapshot_only
+        if net <= self.fund_min_inflow:
+            return {"inflow_days": 0, "status": "snapshot_only", "date": today, "net": net}
+
+        # 2. 尝试读取历史快照计算连续净流入天数
+        historical = self._load_historical_fund_flow(code, as_of_date=today)
+        if not historical:
+            return {"inflow_days": 1, "status": "snapshot_only", "date": today, "net": net}
+
+        consecutive = 1
+        for d in sorted(historical.keys(), reverse=True):
+            if d == today:
+                continue
+            if historical[d] > self.fund_min_inflow:
+                consecutive += 1
+            else:
+                break
+        return {
+            "inflow_days": consecutive,
+            "status": "available" if consecutive >= 2 else "snapshot_only",
+            "date": today,
+            "net": net,
+        }
+
+    def _load_historical_fund_flow(
+        self, code: str, as_of_date: Optional[str] = None
+    ) -> dict[str, float]:
+        """读取历史资金流快照（data/fund_flow/YYYYMMDD.parquet）。
+
+        返回 {date_str: net_inflow}。只读取 as_of_date 之前 N 个交易日。
+        """
+        code = str(code or "").strip().zfill(6)
+        as_of = as_of_date or datetime.now().strftime("%Y%m%d")
+        out: dict[str, float] = {}
+        for p in sorted(self.fund_flow_dir.glob("*.parquet"), reverse=True):
+            date_str = p.stem
+            if not date_str.isdigit() or len(date_str) != 8 or date_str >= as_of:
+                continue
+            try:
+                df = pd.read_parquet(p)
+            except Exception:  # noqa: BLE001
+                continue
+            code_col = _find_col(df, ["股票代码", "代码"])
+            net_col = _find_col(df, ["主力净流入-净额", "净额"])
+            if code_col is None or net_col is None:
+                continue
+            row = df[df[code_col].astype(str).str.strip().str.zfill(6) == code]
+            if len(row) > 0:
+                out[date_str] = _num(row.iloc[0].get(net_col))
+            if len(out) >= self.fund_days + 3:
+                break
+        return out
+
+    def save_fund_flow_snapshot(self, date: Optional[str] = None) -> dict[str, Any]:
+        """保存当日全市场资金流快照到 data/fund_flow/YYYYMMDD.parquet。"""
+        date = date or datetime.now().strftime("%Y%m%d")
+        try:
+            df = self.dl.all_fund_flow_snapshot(fast=False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("保存资金流快照失败：%s", e)
+            return {"date": date, "saved": False, "rows": 0, "error": str(e)}
+        if df is None or len(df) == 0:
+            return {"date": date, "saved": False, "rows": 0, "error": "empty snapshot"}
+        path = self.fund_flow_dir / f"{date}.parquet"
+        try:
+            df.to_parquet(path, index=False)
+            return {"date": date, "saved": True, "rows": len(df), "path": str(path)}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("写入资金流快照失败：%s", e)
+            return {"date": date, "saved": False, "rows": 0, "error": str(e)}
+
+    def _lookup_rps(self, code: str, hist_closes: pd.Series, spot: pd.DataFrame) -> tuple[float, str]:
+        """查询 RPS，返回 (rps_value, mode)。"""
+        if self.rps_map and code in self.rps_map:
+            v = self.rps_map[code]
+            if v is not None and v == v:
+                return float(v), "real"
+        if not self.allow_approx_rps:
+            return 0.0, "unavailable"
+        approx = _rps(code, hist_closes, spot, None)
+        return approx, "approximate"
 
     def _sort_by_change(self, cons: pd.DataFrame) -> pd.DataFrame:
         col = _find_col(cons, ["涨跌幅"])
@@ -804,14 +942,18 @@ class TrendScanner:
             mv_yi = mv / 1e8 if mv > 0 else 0.0
             # 优先使用注入的真实 RPS 表（回测等场景），否则用当日涨幅近似代理
             proxy_rps = self.rps_map.get(code)
-            if proxy_rps is None or proxy_rps != proxy_rps:  # None or NaN
+            if proxy_rps is not None and proxy_rps == proxy_rps:  # 非 NaN
+                rps_mode = "real"
+            else:
                 proxy_rps = min(99.0, max(self.broad_rps_hard_min, 50.0 + pct * 2))
+                rps_mode = "approximate"
             cands.append(StockCandidate(
                 code=code, name=name, board=self._board_for_code(code, "") or self._infer_board_from_name(name) or "观察池",
                 close=close, pct_change=pct, turnover_rate=turnover,
-                circ_mv_yi=mv_yi, rps=float(proxy_rps),
+                circ_mv_yi=mv_yi, rps=float(proxy_rps), rps_mode=rps_mode,
                 reasons=[f"观察池：快照涨幅 {pct:.2f}%，流通市值 {mv_yi:.1f}亿"],
-                fund_inflow_days=0, score=0.0,
+                fund_inflow_days=0, fund_flow_status="unavailable",
+                score=0.0, is_watchlist=True,
             ))
             if len(cands) >= need:
                 break
@@ -923,6 +1065,39 @@ def _ma(k: pd.DataFrame, n: int) -> Optional[float]:
     if len(s) < n:
         return None
     return float(s.iloc[-n:].mean())
+
+
+class RPSCalculator:
+    """轻量 RPS 查询器，供策略池等独立模块使用。"""
+
+    def __init__(self, dl: DataLoader, cfg: dict[str, Any] | None = None) -> None:
+        self.dl = dl
+        self.cfg = cfg or {}
+        self.rps_map: dict[str, float] = {}
+        self.rps_date: Optional[str] = None
+
+    def set_rps_map(self, rps_map: dict[str, float], date: Optional[str] = None) -> None:
+        self.rps_map = rps_map or {}
+        self.rps_date = date
+
+    def rps_for_codes(self, codes: list[str], date: Optional[str] = None) -> dict[str, dict[str, Any]]:
+        """返回 {code: {"rps": float, "mode": str}}。"""
+        date = date or pd.Timestamp.now().strftime("%Y%m%d")
+        out: dict[str, dict[str, Any]] = {}
+        try:
+            spot = self.dl.all_spot()
+        except Exception:  # noqa: BLE001
+            spot = pd.DataFrame()
+        for code in codes:
+            try:
+                k = self.dl.daily_kline(code, n=30, date=date)
+                closes = pd.to_numeric(k["close"], errors="coerce").dropna() if not k.empty else pd.Series(dtype=float)
+            except Exception:  # noqa: BLE001
+                closes = pd.Series(dtype=float)
+            rps = _rps(code, closes, spot, self.rps_map)
+            mode = "real" if self.rps_map and code in self.rps_map else "approximate" if len(closes) >= 21 else "unavailable"
+            out[code] = {"rps": rps, "mode": mode}
+        return out
 
 
 def _rps(code: str, hist_closes: pd.Series, spot: pd.DataFrame, rps_map: dict | None = None) -> float:

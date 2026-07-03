@@ -55,5 +55,17 @@ def test_xuanwu_source_status_uses_pipeline_source_state():
 
     assert status["news"] == "ok"
     assert status["structured_data"] == "degraded"
-    assert status["market_data"] == "degraded"
+    assert status["market_data"] == "ok"
     assert "结构化源降级" in status["warnings"]
+
+
+def test_xuanwu_source_status_market_failed_when_critical_source_fails():
+    pipe = Pipeline(dl=FakeDataLoader(), full_cfg={})
+
+    status = pipe._xuanwu_source_status({
+        "all_spot": {"status": "failed", "reason": "网络中断"},
+        "news": {"status": "ok", "warnings": []},
+    })
+
+    assert status["market_data"] == "failed"
+    assert any("网络中断" in w for w in status["warnings"])

@@ -427,37 +427,69 @@ class DataLoader:
     # ------------------------------------------------------------------ #
     # 资金流（主力 = 超大单+大单净额）
     # ------------------------------------------------------------------ #
-    def individual_fund_flow(self, symbol: str, fast: bool = False) -> pd.DataFrame:
-        """个股资金流（近期每日主力净流入）。
+    def all_fund_flow_snapshot(self, fast: bool = False) -> pd.DataFrame:
+        """全市场资金流快照（同花顺 stock_fund_flow_individual(symbol='即时')）。
 
-        主源同花顺 stock_fund_flow_individual（不封IP），失败回退 all_spot。
-        返回列统一：日期 / 主力净流入-净额 / 主力净流入-净占比 等。
+        返回当日全市场主力净流入排名，含：代码 / 名称 / 主力净流入-净额 等。
+        这是专门的全市场接口，individual_fund_flow 不再承担此职责。
         """
-        # 代码不合法直接返回空，不浪费重试
-        if not symbol or not isinstance(symbol, str) or not symbol.strip().isdigit():
-            return pd.DataFrame()
+        mem_key = "all_fund_flow_snapshot"
+        mem = self._mem_get(mem_key)
+        if mem is not None and len(mem) > 0:
+            return mem.copy()
+
         old_retry = self.retry_times
         if fast:
             self.retry_times = 1
         try:
-            # 1. 主源：同花顺（不封IP）
             df = self._call(
-                "stock_fund_flow_individual", f"fund_ths:{symbol}",
+                "stock_fund_flow_individual", "fund_ths:all_spot",
                 symbol="即时",
             )
             if len(df) > 0:
-                # 同花顺返回的是当日全市场排名，过滤出本股票
+                self._mem_put(mem_key, df)
+                return df.copy()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("all_fund_flow_snapshot failed: %s", e)
+        finally:
+            self.retry_times = old_retry
+        return pd.DataFrame()
+
+    def individual_fund_flow(self, symbol: str, fast: bool = False) -> pd.DataFrame:
+        """个股历史资金流（近期每日主力净流入）。
+
+        主源同花顺 stock_fund_flow_individual（不封IP，传入具体 6 位代码）。
+        返回列统一：日期 / 主力净流入-净额 / 主力净流入-净占比 等。
+        若主源失败，回退到 all_spot 快照中的当日主力净流入字段。
+        """
+        # 代码不合法直接返回空，不浪费重试
+        if not symbol or not isinstance(symbol, str) or not symbol.strip().isdigit():
+            return pd.DataFrame()
+        symbol = symbol.strip().zfill(6)
+        old_retry = self.retry_times
+        if fast:
+            self.retry_times = 1
+        try:
+            # 1. 主源：同花顺个股历史资金流（不封IP）
+            df = self._call(
+                "stock_fund_flow_individual", f"fund_ths:{symbol}",
+                symbol=symbol,
+            )
+            if len(df) > 0:
+                # 统一列名
                 code_col = find_col(df, ["股票代码", "代码"])
-                if code_col:
-                    df = df[df[code_col].astype(str).str.strip() == symbol.strip()]
+                if code_col and code_col != "股票代码":
+                    df = df.rename(columns={code_col: "股票代码"})
+                if "股票代码" not in df.columns:
+                    df["股票代码"] = symbol
                 return df
-            # 同花顺stock_fund_flow_individual失败 → 用 all_spot 兜底
+            # 2. 兜底：all_spot 当日主力净流入快照
             logger.debug("individual_fund_flow THS failed, fallback to all_spot for %s", symbol)
             try:
                 spot = self.all_spot()
                 code_col = find_col(spot, ["代码"])
                 if code_col:
-                    row = spot[spot[code_col].astype(str).str.strip() == symbol.strip()]
+                    row = spot[spot[code_col].astype(str).str.strip().str.zfill(6) == symbol]
                     if len(row) > 0:
                         net_col = find_col(row, ["主力净流入-净额"])
                         pct_col = find_col(row, ["主力净流入-净占比"])

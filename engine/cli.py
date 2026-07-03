@@ -1,9 +1,11 @@
 """命令行入口。
 
 用法：
-    python -m engine.cli sentiment [--date YYYYMMDD]   # 只看情绪温度
-    python -m engine.cli scan [--date YYYYMMDD]        # 跑完整选股链路，输出 JSON
-    python -m engine.cli report [--date YYYYMMDD]      # 跑链路 + 生成 Markdown 简报
+    python -m engine.cli sentiment [--date YYYYMMDD]     # 只看情绪温度
+    python -m engine.cli market-phase [--date YYYYMMDD]  # 识别市场阶段/情绪周期
+    python -m engine.cli pools [--date YYYYMMDD]         # 运行七大策略池
+    python -m engine.cli scan [--date YYYYMMDD]          # 跑完整选股链路，输出 JSON
+    python -m engine.cli report [--date YYYYMMDD]        # 跑链路 + 生成 Markdown 简报
 
 所有命令都打印结果到 stdout（JSON 或 Markdown），report 还会写文件。
 """
@@ -17,10 +19,12 @@ import sys
 from pathlib import Path
 
 from .config import build_data_loader, load_config
+from .market_phase import MarketPhaseAnalyzer
 from .pipeline import Pipeline
 from .report import save_report
 from .sentiment_meter import SentimentMeter
 from .snapshot import SnapshotBuilder
+from .strategy_pools import run_all_pools
 
 
 def cmd_agent(args: argparse.Namespace, cfg: dict) -> int:
@@ -97,6 +101,21 @@ def cmd_sentiment(args: argparse.Namespace, cfg: dict) -> int:
     meter = SentimentMeter(dl, cfg.get("sentiment", {}))
     bd = meter.measure(args.date)
     print(json.dumps(bd.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_market_phase(args: argparse.Namespace, cfg: dict) -> int:
+    dl = build_data_loader(cfg)
+    phase = MarketPhaseAnalyzer(dl, cfg).analyze(args.date)
+    print(json.dumps(phase.to_dict(), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_pools(args: argparse.Namespace, cfg: dict) -> int:
+    dl = build_data_loader(cfg)
+    results = run_all_pools(dl, cfg, args.date)
+    out = {name: [s.to_dict() for s in sigs] for name, sigs in results.items()}
+    print(json.dumps(out, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -213,6 +232,16 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name, help=f"{name} 命令")
         p.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
         p.set_defaults(func=fn)
+
+    # market-phase：市场阶段识别
+    p_phase = sub.add_parser("market-phase", help="识别当前市场阶段/情绪周期")
+    p_phase.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
+    p_phase.set_defaults(func=cmd_market_phase)
+
+    # pools：运行七大策略池
+    p_pools = sub.add_parser("pools", help="运行七大策略池并输出原始信号")
+    p_pools.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
+    p_pools.set_defaults(func=cmd_pools)
 
     # daily：每日盘后调度（RPS -> 快照 -> 扫描 -> 报告 -> 通知）
     p_daily = sub.add_parser("daily", help="每日盘后调度链路")

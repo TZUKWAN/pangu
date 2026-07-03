@@ -48,6 +48,10 @@ trend:
     persistence_threshold: 0.25 # 今昨/前3日领涨重合度综合阈值，低于此值对板块排名扣分
     persistence_penalty: 1.0    # 扣分数值（z-score 量级）
     persistence_top_n: 5        # 持续性比较时取领涨前 N 名（通常 5，与 sector_top_n 解耦）
+  # RPS（相对强度）硬前置配置
+  rps:
+    require_real: true          # 默认必须预计算真实 RPS
+    allow_approx: false         # 默认不允许近似 RPS 进入严格候选池（只允许观察池）
   # 个股趋势形态（全部满足才入选候选池）
   stock:
     ma_periods: [5, 10, 20]     # 均线多头排列：MA5 > MA10 > MA20
@@ -70,15 +74,15 @@ trend:
 # ============ 量化护栏（排雷，宁可错过不可买错）============
 guard:
   exclude_st: true              # 剔除 ST / *ST / 退市风险
-  exclude_new_days: 0           # 暂不剔除次新（避免逐只日K请求拖垮链路）
-  exclude_one_word_limit: false # 是否剔除一字板（买不到）—— 短线打板可关
+  exclude_new_days: 60          # 剔除上市不足 60 日次新
+  exclude_one_word_limit: true  # 剔除一字板（买不到）
   valuation:
     pe_max: 200                 # PE 上限（剔除估值泡沫；None=不过滤）
     pe_min: 0                   # PE 下限（剔除亏损，负 PE 视为亏损）
     pb_max: 15                  # PB 上限
   financial_risk:
-    exclude_loss: false         # 暂不剔除最近报告期亏损（新浪财务摘要当前环境不稳定，避免逐只请求拖垮链路）
-    debt_ratio_max: 1.00        # 资产负债率上限关闭（同上）
+    exclude_loss: true          # 剔除最近报告期亏损
+    debt_ratio_max: 0.90        # 资产负债率上限 90%
   # 可选动量加分（Phase 1 简单版，Phase 2 可接 qlib）
   momentum_bonus:
     enabled: false              # Phase 1 默认关，纯趋势选股
@@ -147,6 +151,29 @@ news_sentiment:
   # negative_words: ["下跌", "领跌", "调整", "利空"]
   # risk_words: ["风险", "亏损", "退市", "监管"]
 
+# ============ A 股策略框架（市场阶段 + 7 大策略池 + 推荐闸门）============
+strategy_framework:
+  enabled: true                 # 启用新版策略框架
+  pools:
+    - 题材龙头
+    - 连板梯队
+    - 趋势回踩
+    - 超跌反弹
+    - 小盘优质
+    - 红利低波
+    - 事件驱动
+  small_quality:
+    max_circ_mv_yi: 100         # 小盘优质池流通市值上限（亿元）
+    min_turnover: 2.0           # 最低换手率（%）
+  dividend_low_vol:
+    min_mv_yi: 300              # 红利低波池最小市值（亿元）
+    max_volatility: 35          # 年化波动率上限（%）
+  # 最终推荐闸门：当市场阶段禁止某策略时，该策略信号降级观察池
+  gate:
+    require_real_rps: true      # 正式推荐必须基于真实 RPS
+    require_fund_flow: true     # 正式推荐必须确认资金流状态 ok
+    require_entry_exit: true    # 必须成功计算买卖点
+
 # ============ 选股输出 ============
 output:
   pick_count: 20                # 核心推荐/辩论数量（减少 debate 耗时）；候选池本身不再硬截断
@@ -165,16 +192,17 @@ backtest:
 
 # ============ 独立 Agent（LLM 大脑）============
 llm:
-  api_key: "${ENV:PANGU_LLM_API_KEY}"
-  base_url: "http://218.197.140.7:3001/v1"
-  model: "Qwen3.5-122B-A10B"
+  provider: openai_compatible
+  api_key_env: PANGU_LLM_API_KEY
+  base_url_env: PANGU_LLM_BASE_URL
+  model_env: PANGU_LLM_MODEL
   timeout: 300                                     # 请求超时（秒）
   providers:
-    - name: qwen
+    - name: primary
+      enabled: true
       api_key_env: PANGU_LLM_API_KEY
-      api_key: "${ENV:PANGU_LLM_API_KEY}"
-      base_url: "http://218.197.140.7:3001/v1"
-      model: "Qwen3.5-122B-A10B"
+      base_url: ${ENV:PANGU_LLM_BASE_URL}
+      model: ${ENV:PANGU_LLM_MODEL}
       timeout: 300
     - name: backup
       enabled: false

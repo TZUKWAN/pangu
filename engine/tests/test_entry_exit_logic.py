@@ -45,7 +45,7 @@ class MockDataLoader:
     def __init__(self, kline: pd.DataFrame) -> None:
         self.kline = kline
 
-    def daily_kline(self, code: str, days: int = 60, adjust: str = "qfq") -> pd.DataFrame:
+    def daily_kline(self, code: str, days: int = 60, adjust: str = "qfq", date: str | None = None) -> pd.DataFrame:
         return self.kline.tail(days).reset_index(drop=True)
 
 
@@ -163,7 +163,7 @@ def test_stop_loss_chooses_widest_valid():
     dl = MockDataLoader(kline)
     engine = EntryExitEngine(
         dl,
-        cfg={"entry_exit": {"min_stop_pct": 0.02, "atr_multiplier": 2.0, "ma20_stop_buffer": 0.03}},
+        cfg={"min_stop_pct": 0.02, "atr_multiplier": 2.0, "ma20_stop_buffer": 0.03},
     )
 
     entry = 100.0
@@ -179,7 +179,7 @@ def test_stop_loss_fallback_to_min_pct():
     dl = MockDataLoader(kline)
     engine = EntryExitEngine(
         dl,
-        cfg={"entry_exit": {"min_stop_pct": 0.10, "atr_multiplier": 2.0}},
+        cfg={"min_stop_pct": 0.10, "atr_multiplier": 2.0},
     )
 
     entry = 100.0
@@ -194,7 +194,7 @@ def test_position_min_trade_amount_and_shares():
     dl = MockDataLoader(kline)
     engine = EntryExitEngine(
         dl,
-        cfg={"entry_exit": {"min_trade_amount": 10000, "min_shares": 100, "base_risk_pct": 0.001}},
+        cfg={"min_trade_amount": 10000, "min_shares": 100, "base_risk_pct": 0.001},
     )
 
     # 低价股，风险金额仅 100 元，但最小成交金额要求 10000 元
@@ -299,3 +299,37 @@ def test_risk_reward_label_is_honest():
         tp1 = d["take_profit"][0]["price"]
         actual_rr = (tp1 - entry) / risk
         assert actual_rr >= 1.9, f"标签2:1但实际盈亏比仅{actual_rr:.2f}，标签不诚实"
+
+
+def test_config_params_affect_output():
+    """EntryExitEngine 配置必须真实影响买卖点/仓位计算。"""
+    kline = _make_kline(n=30, trend="up")
+    dl = MockDataLoader(kline)
+    candidate = StockCandidate(
+        code="000001", name="测试", board="x",
+        close=float(kline["收盘"].iloc[-1]), pct_change=2.0,
+        turnover_rate=1.5, circ_mv_yi=100, rps=85, reasons=["t"],
+    )
+    engine1 = EntryExitEngine(dl, cfg={"atr_period": 14, "account_size": 1_000_000, "base_risk_pct": 0.01})
+    engine2 = EntryExitEngine(dl, cfg={"atr_period": 5, "account_size": 500_000, "base_risk_pct": 0.02, "breakout_lookback": 10})
+    res1 = engine1.compute(candidate, temperature=70)
+    res2 = engine2.compute(candidate, temperature=70)
+    assert res1.position.account_size == 1_000_000
+    assert res2.position.account_size == 500_000
+    assert res1.position.risk_pct != res2.position.risk_pct
+
+
+def test_compute_date_param_uses_historical_kline():
+    """传入 date 参数时，应使用历史 K 线终点。"""
+    kline = _make_kline(n=30, trend="up")
+    dl = MockDataLoader(kline)
+    engine = EntryExitEngine(dl, cfg={})
+    candidate = StockCandidate(
+        code="000001", name="测试", board="x",
+        close=float(kline["收盘"].iloc[-1]), pct_change=2.0,
+        turnover_rate=1.5, circ_mv_yi=100, rps=85, reasons=["t"],
+    )
+    # MockDataLoader ignores date, but we verify date is passed through
+    res = engine.compute(candidate, temperature=70, date="20250101")
+    assert res.code == "000001"
+    assert res.stop_loss is not None

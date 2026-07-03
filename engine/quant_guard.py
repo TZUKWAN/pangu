@@ -31,15 +31,18 @@ logger = logging.getLogger("pangu.guard")
 
 @dataclass
 class GuardResult:
-    """护栏结果。"""
+    """护栏结果：kept 是真正通过硬护栏的候选；watch 是轻微风险只能观察；
+    rejected 是明确排除的候选。"""
 
-    kept: list[StockCandidate]            # 通过护栏的候选
-    rejected: list[dict[str, Any]]        # 被剔除的（含原因）
+    kept: list[StockCandidate]            # 真正通过硬护栏，可进入正式候选
+    watch: list[StockCandidate]           # 轻微风险，只能观察，不能最终推荐
+    rejected: list[dict[str, Any]]        # 明确排除（含原因）
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "kept": [c.to_dict() for c in self.kept],
+            "watch": [c.to_dict() for c in self.watch],
             "rejected": self.rejected,
             "warnings": self.warnings,
         }
@@ -66,7 +69,7 @@ class QuantGuard:
 
     # ------------------------------------------------------------------ #
     def filter(self, candidates: list[StockCandidate], date: Optional[str] = None) -> GuardResult:
-        res = GuardResult(kept=[], rejected=[])
+        res = GuardResult(kept=[], watch=[], rejected=[])
         # 注意：all_spot 只有实时快照，没有历史参数；历史回看时市值/PE 等字段为当天数据，
         # 收盘价/次新判定等已改用 daily_kline(date) 取历史。
         spot = self.dl.all_spot()
@@ -76,28 +79,47 @@ class QuantGuard:
             spot_map = {str(r[code_col]).strip(): r for _, r in spot.iterrows()}
 
         for c in candidates:
-            reason = self._check(c, spot_map.get(c.code), date=date)
+            check = self._check(c, spot_map.get(c.code), date=date)
+            reason = None
+            watch_reason = None
+            if isinstance(check, tuple):
+                reason, watch_reason = check
+            else:
+                reason = check
+
             if reason:
-                # 软护栏：标记风险但不剔除，仍保留在候选池用于观察
+                # 硬剔除：明确风险
                 c.risk_flags.append(reason)
                 res.rejected.append({"code": c.code, "name": c.name, "reason": reason})
+                continue
+            if watch_reason:
+                # 轻微风险：进入观察池，不能最终推荐
+                c.risk_flags.append(watch_reason)
+                res.watch.append(c)
+                continue
             res.kept.append(c)
 
-        logger.info("护栏：候选 %d → 保留 %d（含 %d 只带风险标记），硬剔除 %d",
-                    len(candidates), len(res.kept), sum(1 for c in res.kept if c.risk_flags), len(res.rejected))
+        logger.info("护栏：候选 %d → 通过 %d，观察 %d，硬剔除 %d",
+                    len(candidates), len(res.kept), len(res.watch), len(res.rejected))
         return res
 
     # ------------------------------------------------------------------ #
-    def _check(self, c: StockCandidate, spot_row: Optional[pd.Series], date: Optional[str] = None) -> Optional[str]:
-        """返回剔除原因，None 表示通过。快规则在前。"""
+    def _check(self, c: StockCandidate, spot_row: Optional[pd.Series], date: Optional[str] = None) -> Optional[str] | tuple[Optional[str], Optional[str]]:
+        """返回剔除原因或 (剔除原因, 观察原因)。
 
-        # 1. ST / *ST
+        - 返回字符串：硬剔除原因。
+        - 返回 (None, watch_reason)：轻微风险，进入 watch 池。
+        - 返回 None：通过。
+        """
+        watch_reasons: list[str] = []
+
+        # 1. ST / *ST / 退市：硬剔除
         if self.exclude_st:
             name = c.name.upper()
             if "ST" in name or "退" in c.name:
                 return "ST/*ST/退市风险"
 
-        # 2. 一字板（买不到）：用相对容差，避免 A 股小数价格的浮点严格相等误判
+        # 2. 一字板（买不到）
         if self.exclude_one_word and spot_row is not None:
             open_v = safe_float(spot_row.get("今开"))
             close_v = safe_float(spot_row.get("最新价"))
@@ -111,24 +133,30 @@ class QuantGuard:
             pe = safe_float(spot_row.get("市盈率-动态"))
             pb = safe_float(spot_row.get("市净率"))
 
-            # PE 缺失：跳过 PE 判定，但不算通过（继续看 PB 等其他规则）
-            if not pd.isna(pe):
-                if pe < self.pe_min:
-                    # PE<0 即亏损，受 exclude_loss 控制；PE 低于 pe_min 也按同样规则处理
-                    if self.exclude_loss:
-                        return f"亏损或PE过低（PE={pe:.1f}）"
-                elif pe > self.pe_max:
-                    return f"估值过高（PE={pe:.1f}）"
+            pe_missing = pd.isna(pe)
+            pb_missing = pd.isna(pb)
+            if pe_missing and pb_missing:
+                watch_reasons.append("估值数据缺失")
+            else:
+                if pe_missing:
+                    watch_reasons.append("PE数据缺失")
+                elif not pd.isna(pe):
+                    if pe < self.pe_min:
+                        if self.exclude_loss:
+                            return f"亏损或PE过低（PE={pe:.1f}）"
+                    elif pe > self.pe_max:
+                        return f"估值过高（PE={pe:.1f}）"
 
-            if not pd.isna(pb):
-                if pb > self.pb_max:
-                    return f"PB 过高（PB={pb:.1f}）"
+                if pb_missing:
+                    watch_reasons.append("PB数据缺失")
+                elif not pd.isna(pb):
+                    if pb > self.pb_max:
+                        return f"PB 过高（PB={pb:.1f}）"
 
-        # 4. 次新（上市天数不足）—— 用日 K 行数近似：行数不足即视为新股
+        # 4. 次新（上市天数不足）
         if self.exclude_new_days > 0:
             k = self.dl.daily_kline(c.code, days=self.exclude_new_days + 5, date=date)
             if len(k) == 0:
-                # 取不到 K 线历史的，谨慎起见也视为不可评估
                 return "无足够历史数据"
             if len(k) < self.exclude_new_days:
                 return f"次新股（上市不足 {self.exclude_new_days} 日）"
@@ -139,6 +167,8 @@ class QuantGuard:
             if fin_reason:
                 return fin_reason
 
+        if watch_reasons:
+            return None, ";".join(watch_reasons)
         return None
 
     def _check_financial(self, code: str) -> Optional[str]:

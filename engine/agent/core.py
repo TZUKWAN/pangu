@@ -14,9 +14,10 @@ logger = logging.getLogger("pangu.agent.core")
 
 
 class PanguAgent:
-    """盘古独立 Agent。
+    """盘古 Agent：规则选股 + LLM 解读 / 复核。
 
-    无外部 agent 框架依赖，直接通过 OpenAI 兼容 API 调用 LLM，并执行选股工具。
+    无外部 agent 框架依赖。选股决策由 engine 规则链路完成；LLM 仅用于解释、
+    复核候选池质量、并在数据不足时拒绝推荐。不声称"LLM 自主选股"。
 
     Args:
         llm_client: LLM 客户端
@@ -47,8 +48,8 @@ class PanguAgent:
 
     # ------------------------------------------------------------------ #
     def run(self, question: str, date: Optional[str] = None) -> str:
-        """回答用户问题，自动调用工具直到给出最终结论。"""
-        # 如果是明确的选股指令，走 deep_pick 一键流程
+        """回答用户问题。选股类问题走规则选股 + LLM 解读流程，非选股问题走工具调用循环。"""
+        # 选股/推荐类关键词触发规则选股 + LLM 解读一键流程
         q = question.strip().lower()
         if any(k in q for k in ("选股", "买什么", "推荐", "今天买", "明天", "明日", "选几只", "关注")):
             return self._deep_pick(date)
@@ -110,7 +111,10 @@ class PanguAgent:
 
     # ------------------------------------------------------------------ #
     def _deep_pick(self, date: Optional[str] = None) -> str:
-        """一键选股：直接调用 engine 能力，然后让 LLM 流式生成报告。"""
+        """规则选股 + LLM 解读：先由 engine 规则链路产出候选池，再由 LLM 生成解读报告。
+
+        LLM 会复核候选池质量；若数据不完整或候选质量不足，LLM 应明确拒绝推荐。
+        """
         tool = self.tools.get("deep_pick")
         if tool is None:
             return "⚠️ 未找到 deep_pick 工具"
@@ -157,6 +161,67 @@ class PanguAgent:
         if resp.error:
             return f"⚠️ 报告生成失败：{resp.error}"
         return resp.content or "（模型未返回报告）"
+
+    # ------------------------------------------------------------------ #
+    def agent_review(self, pipeline_result: dict[str, Any]) -> dict[str, Any]:
+        """LLM 复核候选池质量，可拒绝推荐。
+
+        检查项：数据源健康、候选池完整、观察池未混入、RPS 可用、买卖点已计算、
+        无风险票、市场状态允许推荐。
+        """
+        review_prompt = self._build_review_prompt(pipeline_result)
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": review_prompt},
+        ]
+        try:
+            resp = self.llm.chat(messages=messages, tools=None)
+            content = resp.content or ""
+            approved = "拒绝" not in content and "不推荐" not in content
+            return {
+                "approved": approved,
+                "review_text": content,
+                "llm_called": not bool(resp.error),
+                "error": resp.error,
+            }
+        except Exception as e:  # noqa: BLE001
+            return {"approved": False, "review_text": f"复核调用失败：{e}", "llm_called": False, "error": str(e)}
+
+    def _build_review_prompt(self, pipeline_result: dict[str, Any]) -> str:
+        source_status = pipeline_result.get("source_status", {})
+        candidates = pipeline_result.get("candidates", [])
+        rejected = pipeline_result.get("rejected", [])
+        watchlist = pipeline_result.get("watchlist", [])
+        rec_allowed = pipeline_result.get("recommendation_allowed", False)
+
+        checks = []
+        checks.append(f"数据源状态：{json.dumps(source_status, ensure_ascii=False, indent=2)}")
+        checks.append(f"推荐是否允许：{'是' if rec_allowed else '否'}")
+        checks.append(f"严格候选数量：{len(candidates)}，观察池数量：{len(watchlist)}，硬剔除数量：{len(rejected)}")
+
+        rps_ok = source_status.get("rps", {}).get("status") == "ok"
+        checks.append(f"真实 RPS 是否可用：{'是' if rps_ok else '否'}")
+
+        watch_in_final = [c for c in candidates if c.get("is_watchlist")]
+        checks.append(f"观察池是否混入候选：{'是' if watch_in_final else '否'}")
+
+        missing_ee = [c.get("code") for c in candidates if not (c.get("entry_exit") or {}).get("stop_loss")]
+        checks.append(f"缺少买卖点的候选：{missing_ee[:5]}")
+
+        risk_in_final = [c.get("code") for c in candidates if (c.get("risk_flags") or [])]
+        checks.append(f"带 risk_flags 的候选：{risk_in_final[:5]}")
+
+        prompt_lines = [
+            "你是一名投资复核员。请根据以下系统选股链路输出，判断是否可以向用户给出正式推荐。",
+            "规则：",
+            "1. 若 recommendation_allowed=False、真实 RPS 不可用、观察池混入候选、或关键数据源失败，必须拒绝推荐。",
+            '2. 若候选数量过少或质量不足，应说明"今日无符合条件的正式推荐"。',
+            "3. 不要从烂候选中硬挑股票。",
+            "",
+        ]
+        prompt_lines.extend(checks)
+        prompt_lines.extend(["", "请用 100 字以内给出复核结论：是否允许推荐，并说明理由。"])
+        return "\\n".join(prompt_lines)
 
     # ------------------------------------------------------------------ #
     @staticmethod

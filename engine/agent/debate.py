@@ -369,6 +369,7 @@ class StockDebater:
             self._consecutive_failures = 0
             self._llm_available = True
 
+            llm = self._get_llm()
             return {
                 "verdict": verdict_data.get("verdict", "观望"),
                 "confidence": verdict_data.get("confidence", 50),
@@ -378,6 +379,11 @@ class StockDebater:
                 "bull_history": bull_history,
                 "bear_history": bear_history,
                 "mode": "llm",
+                "debate_mode": "llm",
+                "llm_called": True,
+                "provider": getattr(llm, "provider_name", None) if llm else None,
+                "model": getattr(llm, "model", None) if llm else None,
+                "rule_degraded": False,
                 "debate_rounds": max_rounds,
             }
         except Exception as e:  # noqa: BLE001
@@ -414,6 +420,11 @@ class StockDebater:
                     "verdict": "观望",
                     "reason": f"辩论执行失败，已跳过：{e}",
                     "mode": "error",
+                    "debate_mode": "not_run",
+                    "llm_called": False,
+                    "provider": None,
+                    "model": None,
+                    "rule_degraded": True,
                     "bull_points": [], "bear_points": [],
                 }
 
@@ -445,6 +456,11 @@ class StockDebater:
         """
         result = self._rule_fallback(code, name, stock_data, news_sentiment, hot_themes)
         result["mode"] = "rule_validation"
+        result["debate_mode"] = "rule_validation"
+        result["llm_called"] = False
+        result["provider"] = None
+        result["model"] = None
+        result["rule_degraded"] = True
         result["reason"] = (
             "候选池完整性验证：未调用 LLM，使用规则多空代理完成基础论证；"
             + str(result.get("reason") or "")
@@ -659,6 +675,11 @@ class StockDebater:
         reasoning = rule_result.get("reasoning", "")
         rule_note = "LLM 不可用或连续失败，已降级为规则多空打分；结果为基于结构化数据的规则推断，非 AI 深度辩论。"
         rule_result["reason"] = f"{rule_note} {reasoning}".strip()
+        rule_result["mode"] = "rule"
+        rule_result["debate_mode"] = "rule_fallback"
+        rule_result["llm_called"] = False
+        rule_result["provider"] = None
+        rule_result["model"] = None
         rule_result["rule_degraded"] = True
         ns_themes = []
         if news_sentiment:

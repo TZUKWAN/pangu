@@ -137,9 +137,9 @@ class EntryExitEngine:
 
     def __init__(self, dl: DataLoader, cfg: dict[str, Any] | None = None) -> None:
         self.dl = dl
-        self.cfg = cfg or {}
+        # cfg 已经是 entry_exit 子配置；不再读取 cfg["entry_exit"]
+        ecfg = cfg or {}
 
-        ecfg = self.cfg.get("entry_exit", {})
         self.atr_period: int = ecfg.get("atr_period", 14)
         self.breakout_lookback: int = ecfg.get("breakout_lookback", 20)
         self.support_lookback: int = ecfg.get("support_lookback", 10)
@@ -160,6 +160,7 @@ class EntryExitEngine:
         candidate: StockCandidate | dict[str, Any],
         temperature: float = 50.0,
         account_size: float | None = None,
+        date: Optional[str] = None,
     ) -> EntryExitResult:
         """为单只候选股计算买卖点方案。
 
@@ -173,7 +174,7 @@ class EntryExitEngine:
         account = account_size if account_size is not None else self.account_size
 
         # 取日 K；数据不足则直接返回降级结果
-        kline = self._load_kline(code)
+        kline = self._load_kline(code, date=date)
         if kline is None or len(kline) < max(self.ma_periods) + 2:
             res.warnings.append("日 K 数据不足，无法计算买卖点")
             return res
@@ -247,10 +248,11 @@ class EntryExitEngine:
         candidates: list[StockCandidate] | list[dict[str, Any]],
         temperature: float = 50.0,
         account_size: float | None = None,
+        date: Optional[str] = None,
     ) -> list[EntryExitResult]:
         """批量计算买卖点。"""
         return [
-            self.compute(c, temperature=temperature, account_size=account_size)
+            self.compute(c, temperature=temperature, account_size=account_size, date=date)
             for c in candidates
         ]
 
@@ -269,11 +271,11 @@ class EntryExitEngine:
             safe_float(candidate.get("close"), 0.0),
         )
 
-    def _load_kline(self, code: str) -> Optional[pd.DataFrame]:
+    def _load_kline(self, code: str, date: Optional[str] = None) -> Optional[pd.DataFrame]:
         """加载日 K，失败返回 None（上层已做降级）。"""
         try:
             days = max(self.resistance_lookback, self.breakout_lookback) + self.atr_period + 10
-            return self.dl.daily_kline(code, days=days)
+            return self.dl.daily_kline(code, days=days, date=date)
         except Exception as e:  # noqa: BLE001
             logger.warning("%s 取日 K 失败: %s", code, e)
             return None

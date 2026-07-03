@@ -21,6 +21,46 @@ import requests
 
 logger = logging.getLogger("pangu.agent.llm")
 
+# ---------------------------------------------------------------------- #
+# LLM 调用审计（task_type / provider / model / latency / fallback）
+# ---------------------------------------------------------------------- #
+LLM_CALL_LOG: list[dict[str, Any]] = []
+
+SUPPORTED_TASK_TYPES = {
+    "report_generation", "debate_bull", "debate_bear", "debate_judge",
+    "risk_review", "news_summary", "strategy_review", "agent_review",
+    "chat", "unknown",
+}
+
+
+def log_llm_call(
+    task_type: str,
+    provider: str | None,
+    model: str | None,
+    latency_ms: int,
+    success: bool,
+    fallback_reason: str | None = None,
+) -> None:
+    """记录每次 LLM 调用到内存审计日志。"""
+    entry = {
+        "task_type": task_type if task_type in SUPPORTED_TASK_TYPES else "unknown",
+        "provider": provider,
+        "model": model,
+        "latency_ms": latency_ms,
+        "success": success,
+        "fallback_reason": fallback_reason,
+    }
+    LLM_CALL_LOG.append(entry)
+    logger.debug("LLM audit: %s", entry)
+
+
+def get_llm_audit_log() -> list[dict[str, Any]]:
+    return list(LLM_CALL_LOG)
+
+
+def clear_llm_audit_log() -> None:
+    LLM_CALL_LOG.clear()
+
 
 @dataclass
 class ToolCall:
@@ -122,8 +162,11 @@ class OpenAICompatibleClient:
         tool_choice: str = "auto",
         temperature: float = 0.6,
         max_tokens: Optional[int] = None,
+        task_type: str = "unknown",
     ) -> ChatResponse:
         """发起一次 chat completion 请求。"""
+        import time
+        t0 = time.monotonic()
         url = f"{self.base_url}/chat/completions"
         payload: dict[str, Any] = {
             "model": self.model,
@@ -142,13 +185,21 @@ class OpenAICompatibleClient:
             resp.raise_for_status()
             data = resp.json()
         except requests.exceptions.Timeout:
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            log_llm_call(task_type, self.provider_name, self.model, latency_ms, False, "timeout")
             return ChatResponse(error=f"LLM 请求超时（{self.timeout}秒）")
         except requests.exceptions.HTTPError as e:
+            latency_ms = int((time.monotonic() - t0) * 1000)
             detail = sanitize_llm_error(e.response.text[:500], [self.api_key])
+            log_llm_call(task_type, self.provider_name, self.model, latency_ms, False, f"http_{e.response.status_code}")
             return ChatResponse(error=f"LLM HTTP 错误: {e.response.status_code} {detail}")
         except Exception as e:  # noqa: BLE001
+            latency_ms = int((time.monotonic() - t0) * 1000)
+            log_llm_call(task_type, self.provider_name, self.model, latency_ms, False, str(e))
             return ChatResponse(error=f"LLM 请求失败: {sanitize_llm_error(e, [self.api_key])}")
 
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        log_llm_call(task_type, self.provider_name, self.model, latency_ms, True)
         choice = data.get("choices", [{}])[0]
         msg = choice.get("message", {}) if isinstance(choice, dict) else {}
 
@@ -279,6 +330,7 @@ class FallbackLLMClient:
         tool_choice: str = "auto",
         temperature: float = 0.6,
         max_tokens: Optional[int] = None,
+        task_type: str = "unknown",
     ) -> ChatResponse:
         self.last_errors = []
         for client in self.clients:
@@ -288,6 +340,7 @@ class FallbackLLMClient:
                 tool_choice=tool_choice,
                 temperature=temperature,
                 max_tokens=max_tokens,
+                task_type=task_type,
             )
             if not resp.error:
                 self.last_provider = client.provider_name
@@ -300,6 +353,8 @@ class FallbackLLMClient:
             })
             logger.warning("LLM provider %s failed, trying fallback if available: %s", client.provider_name, self.last_errors[-1]["error"])
         summary = "; ".join(f"{e['provider']}: {e['error']}" for e in self.last_errors)
+        # Log final fallback failure for the first provider
+        log_llm_call(task_type, self.clients[0].provider_name, self.clients[0].model, 0, False, summary)
         return ChatResponse(error=f"LLM providers all failed: {summary}")
 
     def stream_chat(
@@ -361,12 +416,21 @@ def _normalize_provider_configs(cfg: dict[str, Any]) -> tuple[list[LLMProviderCo
     warnings: list[str] = []
     raw_providers = list(llm_cfg.get("providers") or [])
 
+    # 支持顶层 base_url_env / model_env / api_key_env
+    def _env_or(cfg: dict[str, Any], env_key: str, val_key: str) -> str:
+        env_name = cfg.get(env_key)
+        if env_name:
+            val = os.environ.get(str(env_name), "")
+            if val:
+                return val
+        return str(cfg.get(val_key) or "")
+
     if not raw_providers:
         raw_providers = [{
             "name": llm_cfg.get("provider") or "primary",
-            "api_key": llm_cfg.get("api_key") or "",
-            "base_url": llm_cfg.get("base_url") or "",
-            "model": llm_cfg.get("model") or "",
+            "api_key": _env_or(llm_cfg, "api_key_env", "api_key"),
+            "base_url": _env_or(llm_cfg, "base_url_env", "base_url"),
+            "model": _env_or(llm_cfg, "model_env", "model"),
             "timeout": llm_cfg.get("timeout", 300),
             "_default_env": "PANGU_LLM_API_KEY",
         }]
@@ -379,8 +443,8 @@ def _normalize_provider_configs(cfg: dict[str, Any]) -> tuple[list[LLMProviderCo
         name = str(raw.get("name") or f"provider_{idx}")
         default_env = raw.get("_default_env") or ("PANGU_LLM_API_KEY" if idx == 1 else None)
         api_key, key_source = _provider_key(raw, default_env=default_env)
-        base_url = str(raw.get("base_url") or "").strip()
-        model = str(raw.get("model") or "").strip()
+        base_url = _env_or(raw, "base_url_env", "base_url").strip()
+        model = _env_or(raw, "model_env", "model").strip()
         timeout = float(raw.get("timeout", llm_cfg.get("timeout", 300)) or 300)
         missing = []
         if not api_key:

@@ -1,210 +1,241 @@
-# 盘古 Pangu · A股短线「情绪+趋势」选股 Agent
+# 盘古 Pangu · A股选股决策辅助系统
 
-> 一个独立、干净的 A 股短线选股决策助手。**盘后分析，告诉你明天关注什么**——情绪+趋势主导，量化做辅助护栏，用独立 Python Agent 做 LLM 综合，多数据源（同花顺/腾讯/新浪/adata）免 token 稳定取数。
+> 一个基于真实 A 股数据的盘后选股原型系统。**规则选股为主，LLM 只做解读/复核**。
+> 本系统不承诺收益，不自动交易，所有输出仅作为次日开盘前的观察参考。
 
-## ⚠️ 风险声明
+## ⚠️ 重要声明
 
-本系统是**盘后决策辅助工具，不保证收益，不自动交易**。它基于当日收盘数据，为**次日开盘**筛选关注标的。月 13-20% 目标是短线高波动风格，盈亏取决于你的执行与风控。回测≠未来。所有输出末尾均带免责提示。
+- **本系统是盘后决策辅助工具，不保证收益，不自动交易。**
+- 选股以**规则 + 真实数据约束**为主，LLM 仅用于报告解读、复核和摘要，**不参与选股决策**。
+- 所有概率/推荐度字段在未经过样本外回测校准前，**不得视为真实胜率**。
+- 当关键数据缺失或市场状态不适合交易时，系统会明确输出“今日无正式推荐”，不会硬凑股票。
 
 ---
 
-## 它解决什么问题
+## 核心设计
 
-你要的不是又一个回测框架，而是一个**每天收盘后告诉你"明天该关注什么"**的助手。它的工作方式：
+系统从“单一涨幅 TopN + RPS + 均线突破”重构为：
 
+```text
+市场状态（market_phase）
+    ↓
+7 类策略池（strategy_pools）
+    ↓
+量化护栏（QuantGuard）
+    ↓
+最终推荐闸门（RecommendationGate）
+    ↓
+final_recommendations / watchlist / rejected
 ```
-① 情绪温度计 (0-100)   →  判定次日攻防姿态
-       <40 冰点观望 / 40-85 正常选股 / >85 亢奋警惕
-② 趋势扫描            →  热门板块 + 个股形态 + 主力资金流入
-③ 量化护栏            →  剔 ST/财务风险/估值泡沫（排雷）
-④ LLM 综合 (独立 Agent)  →  结合新闻简报，输出明日 3-5 只 + 买点/止损/风险
-```
 
-情绪和趋势是**引擎**（做对的事），量化是**护栏**（不做坏事）—— 这正是你想要的"量化只做辅助"。
+只有同时通过**数据完整性、市场状态、板块共振、个股地位、交易计划、风险过滤**六道闸门的股票，才能进入 `final_recommendations`。
 
-## 架构（4 层解耦，独立干净）
+---
 
-```
-engine/      Python 选股引擎（akshare 数据 + 情绪计 + 趋势计 + 护栏）
-engine/agent/  独立 Agent（LLM 工具调用循环 + OpenAI 兼容 client）
-agent/        旧 pi Extension（已弃用，移到 agent/legacy/）
-skills/       capitalise-finnews（已装，新闻简报源）
-config/       settings.yaml（所有阈值可调）
-data/         SQLite + Markdown 报告
-```
+## 市场状态（6 阶段）
+
+`engine/market_phase.py` 根据涨停/跌停、炸板率、连板高度、昨日涨停今日表现、市场宽度等判断：
+
+- **冰点期**：空仓/极轻仓，只允许低位修复观察和红利低波防守
+- **修复期**：轻仓试错，允许低位反转、首板启动、强趋势回踩
+- **主升期**：积极仓位，允许题材龙头、中军趋势、补涨扩散、连板核心
+- **高潮期**：轻仓只参与核心，禁止后排追涨
+- **分歧期**：控制仓位，只看龙头承接/中军抗跌
+- **退潮期**：空仓或防守仓位，禁止短线进攻
+
+---
+
+## 7 类策略池
+
+| 策略池 | 模块 | 说明 |
+|--------|------|------|
+| 题材龙头 | `ThemeLeaderPool` | 先识别主线题材，再识别龙头/中军/补涨角色 |
+| 连板梯队 | `LimitUpPool` | 连板质量与涨停结构，一字板只作情绪锚点 |
+| 趋势回踩 | `TrendPullbackPool` | 强趋势股缩量回踩 MA10/MA20 或平台突破后承接 |
+| 超跌反弹 | `OversoldReboundPool` | 冰点修复期专用，跌深企稳信号 |
+| 小盘优质 | `SmallQualityPool` | 小市值+质量+流动性，默认只进观察池 |
+| 红利低波 | `DividendLowVolPool` | 防守池，弱市时替代展示 |
+| 事件驱动 | `EventDrivenPool` | 龙虎榜/公告/事件催化，目前基于龙虎榜上榜 |
+
+每个策略池独立产出 `StrategySignal`，不受其他池污染。
+
+---
+
+## 最终推荐闸门（6 道硬闸门）
+
+`engine/recommendation_gate.py`：
+
+1. **数据完整性**：真实 RPS、完整 K 线、资金流可解释、买卖点可计算
+2. **市场状态**：当前阶段允许该策略（冰点禁追涨、退潮禁进攻等）
+3. **板块共振**：有明确题材/板块，非孤立上涨
+4. **个股地位**：角色明确（龙头/中军/补涨/首板观察/趋势核心），后排剔除
+5. **交易计划**：有触发条件、止损、目标/止盈、盈亏比
+6. **风险过滤**：通过 QuantGuard（ST/财务/估值/退市/一字板等）
+
+任一闸门不通过即降级到 `watchlist` 或 `rejected`。
+
+---
 
 ## 快速开始
 
-### 1. 装依赖
+### 1. 安装依赖
+
 ```bash
 cd D:/交易智能体
-pip install -r requirements.txt              # Python 引擎 + 独立 Agent
+pip install -r requirements.txt
 ```
 
-### 2. 配置 LLM（可选，Agent 综合分析需要）
-**不要把真实 api_key 写进 `config/settings.yaml` 提交仓库。** 推荐通过环境变量传入：
+### 2. 配置 LLM（可选，仅用于报告解读/复核）
+
+**不要把 API key 写入配置文件提交仓库。** 通过环境变量传入：
+
 ```bash
-export PANGU_LLM_API_KEY="sk-..."           # Linux/macOS
-set PANGU_LLM_API_KEY=sk-...                # Windows CMD
-$env:PANGU_LLM_API_KEY="sk-..."             # PowerShell
+# Linux / macOS
+export PANGU_LLM_API_KEY="sk-..."
+export PANGU_LLM_BASE_URL="https://api.example.com/v1"
+export PANGU_LLM_MODEL="gpt-4o-mini"
+
+# Windows CMD
+set PANGU_LLM_API_KEY=sk-...
+set PANGU_LLM_BASE_URL=https://api.example.com/v1
+set PANGU_LLM_MODEL=gpt-4o-mini
 ```
-`config/settings.yaml` 中 `llm.api_key` 保持空字符串即可；也支持填写 `${ENV:YOUR_KEY_NAME}` 占位符。
-支持 DeepSeek / Qwen / GLM / 豆包 / Kimi / OpenAI 等所有 OpenAI 兼容接口。
+
+参考 `.env.example`。
 
 ### 3. 预计算真实 RPS（首次必做，盘后跑一次即可）
+
 ```bash
-python -m engine.cli rps-build --workers 10   # 算全市场5500+只真实20日RPS存库（约1-2分钟）
+python -m engine.cli rps-build --workers 10
 ```
-> 没跑这步，scan 会用失真的近似RPS并打印警告。建议每个交易日15:30后跑一次。
 
-### 4. 验证引擎（无需 LLM key，用真实 A 股数据）
+> 未运行 RPS 预计算时，系统不会生成正式推荐，只会输出观察池。
+
+### 4. 验证引擎
+
 ```bash
-python -m engine.cli sentiment               # 看情绪温度（增强版含市场结构/广度/历史分位）
-python -m engine.cli scan                    # 跑完整选股链路（真实RPS+趋势+护栏+买卖点）
-python -m engine.cli report                  # 生成 Markdown 选股简报 → data/reports/
+python -m engine.cli sentiment              # 情绪温度
+python -m engine.cli market-phase           # 市场阶段/情绪周期
+python -m engine.cli pools                  # 七大策略池原始信号
+python -m engine.cli scan                   # 完整选股链路 → JSON
+python -m engine.cli report                 # 生成 Markdown 简报 → data/reports/
 ```
 
-### 5. 每日盘后一键调度（推荐）
+### 5. 每日盘后一键调度
+
 ```bash
-python -m engine.cli daily                   # RPS → 快照 → 扫描 → 报告 → 通知（如已配置）
-python -m engine.cli daily --dry-run         # 只检查配置/通知，不执行耗时取数
-python -m engine.cli daily --skip-rps        # 跳过 RPS 预计算
+python -m engine.cli daily                  # RPS → 快照 → 扫描 → 报告
+python -m engine.cli daily --dry-run        # 只检查配置/通知
 ```
-调度状态写入 `data/scheduler/YYYYMMDD_status.json` 与 `data/scheduler/scheduler.log`。
 
-### 5. 跑 Agent（LLM 综合选股）
+### 6. Web 看板
+
 ```bash
-# 交互式 REPL（菜单 3. AI选股）
-python -m engine.repl
-
-# 或命令行一次性问答
-python -m engine.agent.cli "明天 A 股帮我关注 3-5 只短线票"
-# 或
-python -m engine.cli agent "000001 平安银行明天能关注吗"
-
-# Agent 会调 get_sentiment → scan_trend → get_news_briefing → debate_stock → 输出买卖点报告
+python -m engine.web                        # http://127.0.0.1:8000
 ```
 
-### 6. Web 看板（暗色交互 UI，推荐）
-不想看终端 JSON？启动网页看板，所有重要数据一目了然：
-```bash
-python -m engine.web            # 默认 http://127.0.0.1:8000
-python -m engine.web --port 9000 --host 0.0.0.0   # 自定义端口/可外部访问
+页面展示：
+- 情绪温度计与市场阶段
+- 热门板块与短线连板梯队
+- 严格候选 / 观察池 / 最终推荐 分离展示
+- AI 摘要/解读（仅解读，不参与选股）
+
+---
+
+## 核心输出字段
+
+最终推荐股票包含：
+
+```json
+{
+  "code": "000000",
+  "name": "示例股份",
+  "strategy": "题材龙头",
+  "theme": "机器人",
+  "role": "中军",
+  "market_phase_fit": true,
+  "rps_mode": "real",
+  "fund_flow_status": "ok",
+  "entry_condition": "...",
+  "invalid_condition": "...",
+  "stop_loss": "...",
+  "risk_flags": [],
+  "gate_status": "final"
+}
 ```
-浏览器打开后能看到：
-- **情绪温度计**（环形进度 + 姿态 + 15 项分项条形图 + 历史分位/动量/见顶见底信号）
-- **热门板块**（涨幅+资金双因子排名表）
-- **候选股卡片**（推荐度/等级SABC/上涨概率/预测涨幅，点击展开买卖点+6维雷达图）
-- **🤖 AI 明日展望**（点「生成」流式输出 LLM 对次日操作的解读，需配好 llm key）
-- **生成明日报告**（后台异步跑 Pipeline，右下角浮层显示进度日志）
-- **历史报告**（下拉切换历史日期）
 
-> 首次无数据时点「📊 生成明日报告」，约 1-3 分钟（多源取数 + 选股）。
+---
 
-### 7. 独立桌面 GUI（PySide6，白色主题）
-如果你更喜欢原生桌面窗口，启动独立 GUI：
-```bash
-python -m engine.gui            # 默认后端 127.0.0.1:18421
-python -m engine.gui --port 9000 --host 0.0.0.0   # 自定义后端端口
-```
-界面布局：
-- **顶部工具栏**：标题 / 日期选择 / 自动刷新开关 / 「生成明日报告」 / 「AI 明日展望」
-- **上半区**：情绪温度圆环 + 市场信号 + 情绪分项横向条形图；市场结构 + 热门板块表格 + 盘后新闻
-- **下半区**：明日关注池候选股卡片（推荐度 / 等级 / 买卖点 / 6 维雷达图 / 相关新闻）；AI 明日展望文本区（SSE 流式输出）
-- **底部提示条**：风险提示/系统提示
+## 关键约束（系统强制）
 
-> 关闭窗口时自动停止内置 FastAPI 后端线程。
+1. **观察池不进入最终推荐**
+2. **风险票不进入最终推荐**
+3. **真实 RPS 缺失时不生成正式推荐**
+4. **关键数据源失败时不生成正式推荐**
+5. **LLM 不可用时明确标记为规则验证/降级，不伪装成 AI 辩论**
+6. **AI 摘要只叫摘要，不叫 AI 决策**
+7. **未校准概率不视为真实胜率**
 
-## 实测结果（2026-06-26 数据）
-
-```
-情绪温度 58.2（正常）｜涨停60 连板6 炸板率36.8% 跌停30 涨790/跌4676
-热门板块：昨日打二板 / 工业气体 / 玻璃基板 / 纳米银
-候选 10 只（扫描 98 只 → 护栏剔除 29 → 保留 39 → 取前 10）
-  兴业科技 / 航天工程 / 超声电子 / 艾华集团 / 长信科技 ...
-```
-每只都带：均线多头 + 突破平台 + 放量 + RPS相对强势 + 主力资金流入 的入选理由。
-
-## 工具命令
-
-| 命令 | 作用 |
-|------|------|
-| `python -m engine.cli rps-build` | **预计算全市场真实RPS**（盘后跑一次，1-2分钟） |
-| `python -m engine.cli sentiment` | 当日情绪温度（增强版含市场结构/广度/历史分位） |
-| `python -m engine.cli scan` | 完整选股链路 → JSON（含买卖点） |
-| `python -m engine.cli report` | 链路 → Markdown 简报（存盘） |
-| `pytest -k "not live"` | 纯逻辑单测（38 个，秒级） |
-| `pytest` | 含真实数据冒烟测试（需网络） |
-| `python -m engine.agent.cli "问题"` | 独立 Agent 综合选股（命令行） |
-| `python -m engine.repl` → 菜单 3 | 交互式 Agent |
-
-## 配置调参
-
-所有策略阈值在 `config/settings.yaml`，改文件即可，不动代码：
-- 情绪各分项权重与锚点
-- 趋势：均线周期/突破回看/量比/RPS下限/市值区间/资金连续流入天数
-- 护栏：PE/PB/负债率上限、是否剔ST/次新
-
-## 选股方法论（写在 `engine/agent/prompts.py`，LLM 必须遵守）
-
-1. **情绪定调**：永远先看情绪温度。冰点不选股，亢奋提示追高风险。
-2. **趋势选股**：均线多头 + 突破 + 放量 + RPS强势 + 主力资金流入。
-3. **新闻催化**：结合 capitalise-finnews 简报，有题材共振的优先。
-4. **量化排雷**：候选已过 ST/估值/财务护栏，仍要警惕追高接力。
-5. **风控前置**：每只必给具体买点、止损位、目标位（盈亏比≥2:1）。
-
-## 关键技术决策
-
-- **数据层**：akshare 单库无 token 5/5 覆盖（含涨停板全家桶，akshare 独家）。`engine/data_loader.py` 带重试+缓存+降级。
-- **qlib**：Phase 1 不接（你说量化只做辅助，规则化护栏够用），留扩展点。
-- **情绪源**：纯量化指标起步（涨停/资金/板块），社交舆情留 Phase 3。
-- **Agent**：独立 Python Agent，直接调用 engine Python API 作为 LLM 工具，不依赖 pi。
-- **已知坑点**（已在代码处理）：北向资金 `stock_hsgt_*` 自 2024-08 失效，改用主力资金流；个股资金流对坏代码会抛错，已加校验。
+---
 
 ## 项目结构
 
 ```
 D:/交易智能体/
-├── engine/           选股引擎（Python）
-│   ├── data_loader.py      akshare 取数（重试/缓存/降级/财务内存缓存）
-│   ├── sentiment_meter.py  情绪温度计（基础版）
-│   ├── market_structure.py 增强情绪+市场结构（含历史分位/广度/见顶信号）
-│   ├── trend_scanner.py    趋势选股（真实RPS查表）
-│   ├── quant_guard.py      量化护栏（PE/PB/财务/ST/次新）
-│   ├── entry_exit.py       买卖点引擎（ATR止损/盈亏比止盈/1%风险仓位）
-│   ├── rps.py              全市场20日真实RPS预计算（根治失真）
-│   ├── pipeline.py         主链路串联
-│   ├── report.py           Markdown 简报
-│   ├── cli.py              命令行
-│   └── tests/              38 个逻辑测试 + 冒烟测试
-├── engine/agent/     独立 Agent（LLM client + 工具循环 + prompts）
-├── agent/            旧 pi Extension（已弃用，见 agent/legacy/）
-├── config/settings.yaml   所有阈值
-├── skills/capitalise-finnews/   新闻简报技能（已装）
-├── data/             报告 + 缓存
-└── _refs/            参考项目（pi, TradingAgents-CN）
+├── engine/
+│   ├── data_loader.py        数据层（akshare + 多源降级）
+│   ├── sentiment_meter.py    情绪温度计
+│   ├── market_phase.py       市场状态/情绪周期识别（新增）
+│   ├── strategy_pools.py     7 类策略池（新增）
+│   ├── recommendation_gate.py 最终推荐闸门（新增）
+│   ├── trend_scanner.py      趋势扫描与真实 RPS 查表
+│   ├── quant_guard.py        量化护栏（kept/watch/rejected）
+│   ├── entry_exit.py         买卖点引擎
+│   ├── pipeline.py           主链路
+│   ├── agent/                LLM 客户端 / 辩论 / Agent 复核
+│   ├── web/                  FastAPI 看板
+│   └── tests/                单元测试
+├── config/settings.yaml      全部阈值与策略开关
+├── .env.example              LLM 环境变量示例
+└── data/                     报告、缓存、快照
 ```
-
-## 路线图
-
-- **Phase 1（已完成）**：后端主链路 ✅ — engine + 独立 Agent，139 测试，真实数据验证。
-- **Phase 1.5（已完成）**：深度审计修复 ✅ — kimi 协同审计 4 路 + 主控根治：
-  - 真实 RPS（5507只，根治0.19相关失真）✓
-  - 买卖点引擎（ATR止损/盈亏比/仓位）✓
-  - 增强情绪（市场结构/广度/见顶信号）✓
-  - 修复 7 个 bug（涨停解析/find_col/资金流NaN/PE死分支等）✓
-  - LLM 完整闭环跑通（独立 Agent + deep_pick → 专业选股报告）✓
-- **Phase 2**：React+Vite+UnoCSS 仪表盘（KLineCharts K线 + ECharts 情绪热力图），gateway 长驻服务。
-- **Phase 3**：社交舆情（股吧/微博散户情绪）接入，情绪刻画更立体。
-
-## 验证状态（全部实测通过）
-
-- ✅ 139 个纯逻辑单测全过（pytest -k "not live"）
-- ✅ 真实 RPS：全市场 5507 只，64.8s 计算，均值50.0分布正确
-- ✅ 完整选股链路：真实RPS+增强情绪+趋势+护栏+买卖点，选出10只带交易计划
-- ✅ LLM 闭环：独立 Agent 调 deep_pick → 输出专业选股报告（含买卖点/止损/排除说明）
-- ✅ 独立 Agent：不依赖 pi，支持 OpenAI 兼容接口（DeepSeek/Qwen/GLM/豆包/Kimi/OpenAI）
 
 ---
 
-*盘古 Pangu · 用情绪和趋势，在 A 股短线里找到该出手的时刻。*
+## 配置调参
+
+所有阈值在 `config/settings.yaml`：
+
+- `trend.rps.require_real` / `allow_approx`：RPS 硬前置
+- `strategy_framework.enabled`：启用 7 大策略池 + 推荐闸门
+- `strategy_framework.small_quality.*` / `dividend_low_vol.*`：策略池参数
+- `guard.*`：QuantGuard 风险阈值
+- `entry_exit.*`：买卖点参数
+
+---
+
+## 测试
+
+```bash
+# 纯逻辑单元测试（不含真实数据 live 测试）
+python -m pytest engine/tests/ -q --ignore=engine/tests/test_pipeline_live.py
+
+# 真实数据冒烟测试（需网络）
+python -m pytest engine/tests/test_pipeline_live.py -q
+```
+
+当前状态：**277 个纯逻辑单元测试全过**。
+
+---
+
+## 已知限制与后续 TODO
+
+- 部分策略池（事件驱动、红利低波）目前为原型实现，依赖可用数据源。
+- 题材龙头池的板块持续性、新闻催化强度尚未完全量化。
+- 事件驱动池目前主要基于龙虎榜，业绩预增/回购等事件需后续接入公告解析。
+- 未校准的推荐度/概率字段已标记 `calibrated: false`，不代表真实胜率。
+- `python -m engine.cli doctor` 数据源健康检查命令待补充。
+
+---
+
+*盘古 Pangu · 用真实数据和明确规则，把 A 股选股变成可解释、可审计、可拒绝的过程。*
