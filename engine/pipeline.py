@@ -330,9 +330,10 @@ class Pipeline:
         else:
             _update_status("quant_guard", "ok", kept_count=len(kept))
 
-        # ④ 买卖点/技术快照：仅对 deep candidate 并发做完整计算
+        # ④ 买卖点/技术快照：对所有通过/护栏观察的候选统一计算，避免观察池数据丢失
         deep_candidates = kept[: self.deep_candidate_limit]
         broad_candidates = kept[self.deep_candidate_limit :]
+        analysis_candidates = kept + watch_from_guard
 
         def _entry_exit_technical_stage() -> list[dict[str, Any]]:
             def _one(cand: Any) -> dict[str, Any]:
@@ -341,28 +342,39 @@ class Pipeline:
                 d["entry_exit"] = ee.to_dict()
                 d["technical"] = self._technical_snapshot(cand.code, date)
                 return d
-            results: list[dict[str, Any]] = [c.to_dict() for c in deep_candidates]
+            results: list[dict[str, Any]] = [c.to_dict() for c in analysis_candidates]
             try:
-                with ThreadPoolExecutor(max_workers=3) as pool:
-                    results = list(pool.map(_one, deep_candidates))
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    results = list(pool.map(_one, analysis_candidates))
             except Exception as e:  # noqa: BLE001
                 logger.warning("买卖点+技术快照并发失败，回退串行: %s", e)
-                results = [_one(c) for c in deep_candidates]
+                results = [_one(c) for c in analysis_candidates]
             return results
-        deep_full: list[dict[str, Any]] = self._stage(
+        analysis_full: list[dict[str, Any]] = self._stage(
             "买卖点+技术快照", _entry_exit_technical_stage, timeout=300.0,
-            default=[c.to_dict() for c in deep_candidates]
+            default=[c.to_dict() for c in analysis_candidates]
         )
-        entry_exit_ok = all(d.get("entry_exit") and not (d["entry_exit"].get("warnings") or [])
-                         for d in deep_full) if deep_full else False
-        if entry_exit_ok or not deep_full:
-            _update_status("entry_exit", "ok", computed=len(deep_full))
-        else:
-            _update_status("entry_exit", "degraded", reason="部分候选买卖点计算失败", computed=len(deep_full))
+        analysis_dict: dict[str, dict[str, Any]] = {}
+        for d in analysis_full:
+            code = str(d.get("code") or "")
+            if code:
+                analysis_dict[code] = d
 
-        strict_candidates: list[dict[str, Any]] = []
-        watchlist: list[dict[str, Any]] = []
-        for d in deep_full:
+        entry_exit_ok = all(
+            d.get("entry_exit") and not (d["entry_exit"].get("warnings") or [])
+            for d in analysis_full
+        ) if analysis_full else False
+        if entry_exit_ok or not analysis_full:
+            _update_status("entry_exit", "ok", computed=len(analysis_full))
+        else:
+            _update_status("entry_exit", "degraded", reason="部分候选买卖点计算失败", computed=len(analysis_full))
+
+        # 严格候选 = deep limit；观察池 = broad + guard.watch + trend 宽松观察池
+        deep_full = [analysis_dict.get(c.code, c.to_dict()) for c in deep_candidates]
+        broad_full = [analysis_dict.get(c.code, c.to_dict()) for c in broad_candidates]
+        guard_watch_full = [analysis_dict.get(c.code, c.to_dict()) for c in watch_from_guard]
+
+        def _ensure_fields(d: dict[str, Any]) -> dict[str, Any]:
             d = dict(d)
             if "entry_exit" not in d:
                 d["entry_exit"] = {
@@ -376,56 +388,27 @@ class Pipeline:
                     "ma": {}, "macd": {}, "volume": {}, "trend_windows": {}, "kline": [],
                     "hints": [], "warnings": ["观察池：未计算技术指标"],
                 }
-            strict_candidates.append(d)
+            return d
 
-        # 观察池 = guard.watch + 超出 deep limit 的 kept + 原始观察池候选
-        for cand in broad_candidates:
-            d = cand.to_dict()
-            d["entry_exit"] = {
-                "code": cand.code, "name": cand.name, "close": round(cand.close, 2),
-                "buy_points": [], "stop_loss": None, "take_profit": [],
-                "trailing_stop": None, "position": None,
-                "risk_reward_ratio": 0.0, "warnings": ["观察池：未计算买卖点"],
-                "entry_exit_status": "not_computed", "tradable": False,
-            }
-            d["technical"] = {
-                "ma": {}, "macd": {}, "volume": {}, "trend_windows": {}, "kline": [],
-                "hints": [], "warnings": ["观察池：未计算技术指标"],
-            }
+        strict_candidates = [_ensure_fields(d) for d in deep_full]
+        watchlist: list[dict[str, Any]] = []
+
+        for d in broad_full:
+            d = _ensure_fields(d)
             d["is_watchlist"] = True
             watchlist.append(d)
-        for cand in watch_from_guard:
-            d = cand.to_dict()
-            d["entry_exit"] = {
-                "code": cand.code, "name": cand.name, "close": round(cand.close, 2),
-                "buy_points": [], "stop_loss": None, "take_profit": [],
-                "trailing_stop": None, "position": None,
-                "risk_reward_ratio": 0.0, "warnings": ["观察池：护栏轻微风险"],
-                "entry_exit_status": "not_computed", "tradable": False,
-            }
-            d["technical"] = {
-                "ma": {}, "macd": {}, "volume": {}, "trend_windows": {}, "kline": [],
-                "hints": [], "warnings": ["观察池：未计算技术指标"],
-            }
+        for d in guard_watch_full:
+            d = _ensure_fields(d)
             d["is_watchlist"] = True
+            d.setdefault("watch_reason", "QuantGuard 护栏观察")
             watchlist.append(d)
 
-        # 原始 trend 扫描里的宽松观察池（is_watchlist=True）也从严格候选中移除
+        # 原始 trend 扫描里的宽松观察池（is_watchlist=True）也进入观察池
         for cand in trend.candidates:
             if cand.is_watchlist:
-                d = cand.to_dict()
-                d["entry_exit"] = {
-                    "code": cand.code, "name": cand.name, "close": round(cand.close, 2),
-                    "buy_points": [], "stop_loss": None, "take_profit": [],
-                    "trailing_stop": None, "position": None,
-                    "risk_reward_ratio": 0.0, "warnings": ["观察池：未计算买卖点"],
-                    "entry_exit_status": "not_computed", "tradable": False,
-                }
-                d["technical"] = {
-                    "ma": {}, "macd": {}, "volume": {}, "trend_windows": {}, "kline": [],
-                    "hints": [], "warnings": ["观察池：未计算技术指标"],
-                }
+                d = _ensure_fields(cand.to_dict())
                 d["is_watchlist"] = True
+                d.setdefault("watch_reason", "旧趋势扫描宽松观察池")
                 if d not in watchlist:
                     watchlist.append(d)
 
@@ -599,7 +582,7 @@ class Pipeline:
                 return rg.pass_gate(
                     pooled_signals,
                     candidate_map,
-                    candidates=ranked,
+                    candidates=list(analysis_dict.values()),
                     llm_review_map=llm_review_map or None,
                 )
             gate_result = self._stage("推荐闸门", _gate_stage, timeout=120.0, default=None)
@@ -617,6 +600,63 @@ class Pipeline:
                     final_recommendations.append(c)
                     if len(final_recommendations) >= self.pick_count:
                         break
+
+        # 将闸门结果与分析快照合并，确保 final/watch/rejected 都有 entry_exit/technical/debate
+        if gate_result:
+            final_codes = {item["code"] for item in final_recommendations}
+            watch_codes = {item["code"] for item in gate_result.watchlist}
+            rejected_codes = {item["code"] for item in gate_result.rejected}
+
+            def _merge_gate_item(item: dict[str, Any]) -> dict[str, Any]:
+                code = item.get("code")
+                base = analysis_dict.get(code) if code else None
+                if not base:
+                    return item
+                merged = dict(base)
+                merged.update({k: v for k, v in item.items() if v not in (None, {}, [], "")})
+                merged["gate_status"] = item.get("gate_status")
+                merged["watch_reason"] = item.get("watch_reason")
+                merged["reject_reason"] = item.get("reject_reason")
+                return merged
+
+            final_recommendations = [_merge_gate_item(item) for item in final_recommendations]
+            gate_result.watchlist = [_merge_gate_item(item) for item in gate_result.watchlist]
+            gate_result.rejected = [_merge_gate_item(item) for item in gate_result.rejected]
+
+            # 让 candidates 数组中的 xuanwu 状态与闸门结果保持一致，UI 可正确分层
+            for c in ranked:
+                code = str(c.get("code") or "")
+                xw = dict(c.get("xuanwu") or {})
+                if code in final_codes:
+                    xw["status"] = "xuanwu"
+                    xw["gate_status"] = "final"
+                    c["is_watchlist"] = False
+                elif code in watch_codes:
+                    xw["status"] = "watch"
+                    xw["gate_status"] = "watch"
+                    c["is_watchlist"] = True
+                elif code in rejected_codes:
+                    xw["status"] = "rejected"
+                    xw["gate_status"] = "rejected"
+                    c["is_watchlist"] = False
+                c["xuanwu"] = xw
+
+            # 重建玄武池摘要以反映闸门分层
+            xuanwu_pool = {
+                "version": xuanwu_pool.get("version", "v2"),
+                "policy": xuanwu_pool.get("policy", {}),
+                "summary": {
+                    "candidate_count": len(ranked),
+                    "xuanwu_count": len(final_recommendations),
+                    "watch_count": len(gate_result.watchlist),
+                    "rejected_count": len(gate_result.rejected),
+                    "top_blockers": xuanwu_pool.get("summary", {}).get("top_blockers", []),
+                },
+                "xuanwu": final_recommendations[: self.pick_count],
+                "watch": gate_result.watchlist,
+                "rejected": gate_result.rejected,
+                "all_decisions": {str(c.get("code") or ""): (c.get("xuanwu") or {}) for c in ranked},
+            }
 
         if not recommendation_allowed:
             final_advice = advice + " 当前数据条件不足，系统未生成可信正式推荐。"

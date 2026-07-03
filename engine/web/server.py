@@ -529,15 +529,16 @@ def _trend_windows_from_kline(kline: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _backfill_candidate_trend_windows(data: dict[str, Any]) -> None:
     """Ensure old reports expose explicit 1w/2w/1m windows without refetching data."""
-    for c in data.get("candidates") or []:
-        technical = c.get("technical")
-        if not isinstance(technical, dict):
-            continue
-        if technical.get("trend_windows"):
-            continue
-        windows = _trend_windows_from_kline(technical.get("kline") or [])
-        if windows:
-            technical["trend_windows"] = windows
+    for bucket in ("candidates", "final_recommendations", "watchlist"):
+        for c in data.get(bucket) or []:
+            technical = c.get("technical")
+            if not isinstance(technical, dict):
+                continue
+            if technical.get("trend_windows"):
+                continue
+            windows = _trend_windows_from_kline(technical.get("kline") or [])
+            if windows:
+                technical["trend_windows"] = windows
 
 
 def _backfill_candidate_debates(data: dict[str, Any]) -> bool:
@@ -547,8 +548,10 @@ def _backfill_candidate_debates(data: dict[str, Any]) -> bool:
     rule-validation debates so the UI never suggests an item was simply
     inserted without being challenged.
     """
-    candidates = data.get("candidates") or []
-    if not candidates:
+    all_items: list[dict[str, Any]] = []
+    for bucket in ("candidates", "final_recommendations", "watchlist"):
+        all_items.extend(data.get(bucket) or [])
+    if not all_items:
         return False
     try:
         from ..agent.debate import StockDebater
@@ -557,7 +560,7 @@ def _backfill_candidate_debates(data: dict[str, Any]) -> bool:
         return False
     hot_themes = ((data.get("news") or {}).get("hot_themes") or [])
     changed = False
-    for c in candidates:
+    for c in all_items:
         debate = c.get("debate") or {}
         if debate.get("verdict"):
             continue
@@ -855,7 +858,9 @@ def _enrich_response(data: dict[str, Any]) -> dict[str, Any]:
     enriched["data_update_time"] = runtime["now_text"]
     enriched["source_status"] = _source_status(enriched)
     debates_backfilled = _backfill_candidate_debates(enriched)
-    if (debates_backfilled or not enriched.get("xuanwu_pool")) and enriched.get("candidates"):
+    # 若报告已含推荐闸门结果，不再用旧玄武 builder 覆盖 gate 决策
+    has_gate_output = bool(enriched.get("final_recommendations"))
+    if not has_gate_output and (debates_backfilled or not enriched.get("xuanwu_pool")) and enriched.get("candidates"):
         try:
             from ..xuanwu_pool import XuanwuPoolBuilder
             xuanwu_pool = XuanwuPoolBuilder(load_config()).build(
