@@ -140,9 +140,15 @@ class DailyScheduler:
             warnings=self.pipeline_result.get("warnings", []),
             news=self.pipeline_result.get("news", {}),
             market_modules=self.pipeline_result.get("market_modules", {}),
-            source_state=self.pipeline_result.get("source_state", {}),
+            source_status=self.pipeline_result.get("source_status", self.pipeline_result.get("source_state", {})),
             xuanwu_pool=self.pipeline_result.get("xuanwu_pool", {}),
+            recommendation_allowed=self.pipeline_result.get("recommendation_allowed", False),
+            historical_mode=self.pipeline_result.get("historical_mode", "live"),
         )
+        result.watchlist = self.pipeline_result.get("watchlist", [])
+        result.final_recommendations = self.pipeline_result.get("final_recommendations", [])
+        result.strategy_signals = self.pipeline_result.get("strategy_signals", {})
+        result.strategy_candidates = self.pipeline_result.get("strategy_candidates", [])
         report_dir = self.cfg.get("output", {}).get("report_dir", "data/reports")
         self.report_path = save_report(result, report_dir)
         return {"report_path": str(self.report_path)}

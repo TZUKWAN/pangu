@@ -92,6 +92,8 @@ class DataLoader:
         # 进程内内存缓存：日 K / 全市场快照在同一次扫描中会被反复读取，用内存缓存消除重复 IO
         self._memory_cache: dict[str, tuple[datetime, Any]] = {}
         self._memory_cache_ttl = timedelta(minutes=60)
+        # 熔断：同花顺个股资金流接口一旦全局失败，本进程内后续调用直接短路，避免逐只重试拖死链路
+        self._ths_fund_flow_broken: bool = False
         if ak is None:
             raise DataLoadError(
                 "akshare 未安装。请在项目根目录运行: pip install -r requirements.txt"
@@ -437,6 +439,8 @@ class DataLoader:
         mem = self._mem_get(mem_key)
         if mem is not None and len(mem) > 0:
             return mem.copy()
+        if self._ths_fund_flow_broken:
+            return pd.DataFrame()
 
         old_retry = self.retry_times
         if fast:
@@ -450,7 +454,8 @@ class DataLoader:
                 self._mem_put(mem_key, df)
                 return df.copy()
         except Exception as e:  # noqa: BLE001
-            logger.debug("all_fund_flow_snapshot failed: %s", e)
+            logger.warning("all_fund_flow_snapshot 全局失败，后续个股资金流将短路: %s", e)
+            self._ths_fund_flow_broken = True
         finally:
             self.retry_times = old_retry
         return pd.DataFrame()
@@ -466,6 +471,9 @@ class DataLoader:
         if not symbol or not isinstance(symbol, str) or not symbol.strip().isdigit():
             return pd.DataFrame()
         symbol = symbol.strip().zfill(6)
+        # 全局熔断：同花顺资金流已确认不可用，直接走 all_spot 兜底
+        if self._ths_fund_flow_broken:
+            return self._individual_fund_flow_from_spot(symbol)
         old_retry = self.retry_times
         if fast:
             self.retry_times = 1
@@ -484,28 +492,34 @@ class DataLoader:
                     df["股票代码"] = symbol
                 return df
             # 2. 兜底：all_spot 当日主力净流入快照
-            logger.debug("individual_fund_flow THS failed, fallback to all_spot for %s", symbol)
-            try:
-                spot = self.all_spot()
-                code_col = find_col(spot, ["代码"])
-                if code_col:
-                    row = spot[spot[code_col].astype(str).str.strip().str.zfill(6) == symbol]
-                    if len(row) > 0:
-                        net_col = find_col(row, ["主力净流入-净额"])
-                        pct_col = find_col(row, ["主力净流入-净占比"])
-                        if net_col:
-                            result = pd.DataFrame([{
-                                "日期": datetime.now().strftime("%Y%m%d"),
-                                "主力净流入-净额": str(row[net_col].iloc[0]),
-                                "主力净流入-净占比": str(row[pct_col].iloc[0]) if pct_col else "0",
-                                "股票代码": symbol,
-                            }])
-                            return result
-            except Exception:  # noqa: BLE001
-                pass
-            return pd.DataFrame()
+            return self._individual_fund_flow_from_spot(symbol)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("individual_fund_flow %s 失败，后续将短路: %s", symbol, e)
+            self._ths_fund_flow_broken = True
+            return self._individual_fund_flow_from_spot(symbol)
         finally:
             self.retry_times = old_retry
+
+    def _individual_fund_flow_from_spot(self, symbol: str) -> pd.DataFrame:
+        """用 all_spot 快照里的主力净流入字段兜底。"""
+        try:
+            spot = self.all_spot()
+            code_col = find_col(spot, ["代码"])
+            if code_col:
+                row = spot[spot[code_col].astype(str).str.strip().str.zfill(6) == symbol]
+                if len(row) > 0:
+                    net_col = find_col(row, ["主力净流入-净额"])
+                    pct_col = find_col(row, ["主力净流入-净占比"])
+                    if net_col:
+                        return pd.DataFrame([{
+                            "日期": datetime.now().strftime("%Y%m%d"),
+                            "主力净流入-净额": str(row[net_col].iloc[0]),
+                            "主力净流入-净占比": str(row[pct_col].iloc[0]) if pct_col else "0",
+                            "股票代码": symbol,
+                        }])
+        except Exception:  # noqa: BLE001
+            pass
+        return pd.DataFrame()
 
     def sector_fund_flow_rank(self, indicator: str = "今日") -> pd.DataFrame:
         """概念板块资金流排名。
