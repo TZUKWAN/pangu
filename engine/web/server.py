@@ -38,6 +38,7 @@ from ..data_loader import find_col, safe_float
 from ..market_phase import MarketPhaseAnalyzer
 from ..pipeline import Pipeline
 from ..strategy_pools import run_all_pools
+from ..scheduler import DailyScheduler
 
 logger = logging.getLogger("pangu.web")
 
@@ -109,6 +110,104 @@ def _ensure_warmup():
             logger.info("all_spot 预热完成")
         except Exception as e:
             logger.warning("预热失败: %s", e)
+
+
+def _beijing_now() -> datetime:
+    """返回 Asia/Shanghai 时区的当前时间。"""
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
+
+
+def _parse_schedule_time(cfg: dict[str, Any]) -> Optional[dt_time]:
+    """解析配置中的 schedule.scan_time/time，默认 15:05。"""
+    schedule_cfg = cfg.get("schedule") or {}
+    raw = schedule_cfg.get("scan_time") or schedule_cfg.get("time") or "15:05"
+    if not raw:
+        return None
+    try:
+        parts = raw.split(":")
+        return dt_time(int(parts[0]), int(parts[1]))
+    except Exception:
+        logger.warning("schedule.scan_time 格式错误: %s，使用默认 15:05", raw)
+        return dt_time(15, 5)
+
+
+def _next_run_time(schedule_time: dt_time, now: Optional[datetime] = None) -> datetime:
+    """计算下一个调度时刻（Asia/Shanghai）。"""
+    now = now or _beijing_now()
+    target = now.replace(hour=schedule_time.hour, minute=schedule_time.minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+def _is_trading_day(date_str: str) -> bool:
+    """粗略判断是否为 A 股交易日（周一到周五）。"""
+    try:
+        d = datetime.strptime(date_str, "%Y%m%d").date()
+        return d.weekday() < 5
+    except Exception:
+        return True
+
+
+def _run_scheduled_daily() -> None:
+    """后台调度线程：每日收盘后自动跑盘后链路并刷新内存缓存。"""
+    cfg = load_config()
+    schedule_cfg = cfg.get("schedule") or {}
+    if not schedule_cfg.get("enabled", False):
+        logger.info("自动调度已禁用（schedule.enabled=false）")
+        return
+
+    schedule_time = _parse_schedule_time(cfg)
+    if schedule_time is None:
+        return
+
+    logger.info("自动调度已启用，每日 %s (Asia/Shanghai) 执行盘后链路", schedule_time.strftime("%H:%M"))
+    while True:
+        now = _beijing_now()
+        target = _next_run_time(schedule_time, now)
+        sleep_seconds = (target - now).total_seconds()
+        logger.info("下次自动调度: %s，约 %.0f 秒后", target.isoformat(), sleep_seconds)
+        time.sleep(max(1.0, sleep_seconds))
+
+        now = _beijing_now()
+        date_str = now.strftime("%Y%m%d")
+        if not _is_trading_day(date_str):
+            logger.info("%s 非 A 股交易日，跳过今日自动调度", date_str)
+            continue
+
+        # 避免和手动扫描冲突：复用全局任务锁
+        running = next((t for t in _tasks.values() if t.status in ("pending", "running")), None)
+        if running is not None:
+            logger.warning("已有扫描任务 %s 在运行，自动调度跳过", running.task_id)
+            continue
+
+        task_id = uuid.uuid4().hex[:12]
+        state = _TaskState(task_id, date_str)
+        _tasks[task_id] = state
+        state.status = "running"
+        state.log(f"自动调度开始 date={date_str}")
+        try:
+            scheduler = DailyScheduler(cfg=cfg, date=date_str, workers=10)
+            summary = scheduler.run()
+            state.status = "done"
+            state.log(f"自动调度完成: {summary.get('overall_status')}，候选 {summary.get('candidate_count', 0)} 只")
+            # 刷新内存缓存：加载最新报告
+            latest = _find_latest_report()
+            if latest is not None:
+                global _latest_result
+                _latest_result = _enrich_response(latest)
+                logger.info("自动调度已刷新内存缓存: %s", latest.get("date"))
+        except Exception as e:
+            state.status = "failed"
+            state.error = str(e)
+            state.log(f"自动调度失败: {e}")
+            logger.exception("自动调度失败")
+
+
+def _start_scheduler() -> None:
+    """启动后台自动调度线程。"""
+    t = threading.Thread(target=_run_scheduled_daily, daemon=True, name="pangu-scheduler")
+    t.start()
 
 
 def _build_pipeline(cfg: dict[str, Any]) -> Pipeline:
@@ -527,6 +626,20 @@ def _trend_windows_from_kline(kline: list[dict[str, Any]]) -> dict[str, Any]:
     return out
 
 
+def _sanitize_floats(obj: Any) -> Any:
+    """递归把 nan/inf 替换为 None，保证 JSON 序列化合法。"""
+    import math
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+
 def _backfill_candidate_trend_windows(data: dict[str, Any]) -> None:
     """Ensure old reports expose explicit 1w/2w/1m windows without refetching data."""
     for bucket in ("candidates", "final_recommendations", "watchlist"):
@@ -891,7 +1004,7 @@ def _enrich_response(data: dict[str, Any]) -> dict[str, Any]:
             if w not in existing:
                 existing.append(w)
         enriched["warnings"] = existing
-    return enriched
+    return _sanitize_floats(enriched)
 
 
 # ---------------------------------------------------------------------- #
@@ -1156,7 +1269,7 @@ async def api_scan_status(task_id: str):
         "status": state.status,
         "logs": state.logs[-10:],  # 最近 10 条日志
         "error": state.error,
-        "result": state.result if state.status == "done" else None,
+        "result": _sanitize_floats(state.result) if state.status == "done" else None,
     }
 
 
@@ -1887,6 +2000,8 @@ def run() -> None:
     print(f"\n  盘古 Pangu 选股看板启动中...")
     # 后台预热：提前拉取全市场数据到内存缓存
     threading.Thread(target=_ensure_warmup, daemon=True).start()
+    # 后台自动调度：每日收盘后跑盘后链路
+    _start_scheduler()
     print(f"  → http://{args.host}:{args.port}  (后台预热中，约10秒后首请求秒开)\n")
     uvicorn.run(
         "engine.web.server:app",

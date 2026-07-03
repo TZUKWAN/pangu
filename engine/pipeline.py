@@ -608,12 +608,24 @@ class Pipeline:
             rejected_codes = {item["code"] for item in gate_result.rejected}
 
             def _merge_gate_item(item: dict[str, Any]) -> dict[str, Any]:
+                def _is_empty(v: Any) -> bool:
+                    if v is None:
+                        return True
+                    if isinstance(v, str) and v == "":
+                        return True
+                    if isinstance(v, (list, tuple, dict)) and len(v) == 0:
+                        return True
+                    # numpy/pandas 空数组
+                    if hasattr(v, "size"):
+                        return v.size == 0
+                    return False
+
                 code = item.get("code")
                 base = analysis_dict.get(code) if code else None
                 if not base:
                     return item
                 merged = dict(base)
-                merged.update({k: v for k, v in item.items() if v not in (None, {}, [], "")})
+                merged.update({k: v for k, v in item.items() if not _is_empty(v)})
                 merged["gate_status"] = item.get("gate_status")
                 merged["watch_reason"] = item.get("watch_reason")
                 merged["reject_reason"] = item.get("reject_reason")

@@ -211,7 +211,7 @@ llm:
       model: ""
       timeout: 300
 
-# ============ 调度（可选，Phase 1 先手动跑）============
+# ============ 调度（web 服务启动后自动每日收盘后跑）============
 schedule:
-  enabled: false                # Phase 2 再接 cron/任务调度
-  scan_time: "15:30"            # 每日收盘后扫描
+  enabled: true                 # 启动 web 服务后自动每日盘后跑链路
+  scan_time: "15:05"            # 每日收盘后扫描（Asia/Shanghai）
