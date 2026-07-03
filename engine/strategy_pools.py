@@ -33,17 +33,37 @@ class StrategySignal:
     allow_when_phase_forbids: bool = False
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        def _clean(v: Any) -> Any:
+            if isinstance(v, (bool,)):
+                return bool(v)
+            if hasattr(v, "item"):
+                return v.item()
+            if isinstance(v, dict):
+                return {k: _clean(val) for k, val in v.items()}
+            if isinstance(v, list):
+                return [_clean(val) for val in v]
+            return v
+
+        raw_features = {k: _clean(v) for k, v in self.raw_features.items()}
+        d: dict[str, Any] = {
             "strategy": self.strategy_name,
             "code": self.code,
             "name": self.name,
             "board": self.board,
             "trigger_reason": self.trigger_reason,
             "score": round(self.score, 2),
-            "raw_features": self.raw_features,
+            "raw_features": raw_features,
             "warnings": self.warnings,
-            "allow_when_phase_forbids": self.allow_when_phase_forbids,
+            "allow_when_phase_forbids": bool(self.allow_when_phase_forbids),
         }
+        # 把关键字段提升到顶层，方便前端/报告/LLM 直接使用
+        if "role" in raw_features:
+            d["role"] = raw_features["role"]
+        if "concept" in raw_features:
+            d["theme"] = raw_features["concept"]
+        if "setup" in raw_features:
+            d["setup"] = raw_features["setup"]
+        return d
 
 
 class StrategyPool(ABC):
@@ -396,8 +416,12 @@ class TrendPullbackPool(StrategyPool):
             kline = self._daily_kline(code, n=60, date=date)
             if kline.empty or len(kline) < 30:
                 continue
-            close = pd.to_numeric(kline["close"], errors="coerce").dropna()
-            vol = pd.to_numeric(kline["volume"], errors="coerce").dropna()
+            close_col = find_col(kline, ["收盘", "close"])
+            vol_col = find_col(kline, ["成交量", "volume", "vol"])
+            if close_col is None or vol_col is None:
+                continue
+            close = pd.to_numeric(kline[close_col], errors="coerce").dropna()
+            vol = pd.to_numeric(kline[vol_col], errors="coerce").dropna()
             if len(close) < 30 or len(vol) < 30:
                 continue
             ma20 = close.rolling(20).mean().iloc[-1]
@@ -453,16 +477,25 @@ class OversoldReboundPool(StrategyPool):
         if pct_col is None:
             return []
 
-        codes = self._code_series(spot).unique()[:300]
+        spot = spot.copy()
+        spot["_code"] = self._code_series(spot).fillna("").astype(str).str.zfill(6)
+        codes = spot["_code"].unique()[:300]
+        name_col = find_col(spot, ["名称", "name"])
         signals: list[StrategySignal] = []
         for code in codes:
             kline = self._daily_kline(code, n=60, date=date)
             if kline.empty or len(kline) < 30:
                 continue
-            close = pd.to_numeric(kline["close"], errors="coerce").dropna()
-            high = pd.to_numeric(kline["high"], errors="coerce").dropna()
-            low = pd.to_numeric(kline["low"], errors="coerce").dropna()
-            vol = pd.to_numeric(kline["volume"], errors="coerce").dropna()
+            close_col = find_col(kline, ["收盘", "close"])
+            high_col = find_col(kline, ["最高", "high"])
+            low_col = find_col(kline, ["最低", "low"])
+            vol_col = find_col(kline, ["成交量", "volume", "vol"])
+            if not all([close_col, high_col, low_col, vol_col]):
+                continue
+            close = pd.to_numeric(kline[close_col], errors="coerce").dropna()
+            high = pd.to_numeric(kline[high_col], errors="coerce").dropna()
+            low = pd.to_numeric(kline[low_col], errors="coerce").dropna()
+            vol = pd.to_numeric(kline[vol_col], errors="coerce").dropna()
             if len(close) < 30:
                 continue
 
@@ -477,17 +510,16 @@ class OversoldReboundPool(StrategyPool):
             if not (vol_shrink or hammer):
                 continue
 
-            rows = spot[spot[self._code_series(spot) == code]]
-            if rows.empty:
+            row = spot[spot["_code"] == code]
+            if row.empty:
                 continue
-            row = rows.iloc[0]
             board = self._board(code)
             score = min(88, abs(ret_20) * 1.5 + (10 if hammer else 0) + (5 if vol_shrink else 0))
             signals.append(
                 StrategySignal(
                     strategy_name=self.name,
                     code=code,
-                    name=str(row.get(find_col(spot, ["名称", "name"]) or "", "")),
+                    name=str(row.iloc[0].get(name_col, "")) if name_col else "",
                     board=board,
                     trigger_reason=f"20 日跌幅 {ret_20:.1f}%，" + ("锤子线" if hammer else "缩量企稳"),
                     score=score,
@@ -600,7 +632,10 @@ class DividendLowVolPool(StrategyPool):
             kline = self._daily_kline(code, n=60, date=date)
             if kline.empty or len(kline) < 30:
                 continue
-            close = pd.to_numeric(kline["close"], errors="coerce").dropna()
+            close_col = find_col(kline, ["收盘", "close"])
+            if close_col is None:
+                continue
+            close = pd.to_numeric(kline[close_col], errors="coerce").dropna()
             vol = close.pct_change().dropna().std() * (252 ** 0.5) * 100
             if vol > cfg.get("max_volatility", 35):
                 continue
@@ -690,13 +725,13 @@ class EventDrivenPool(StrategyPool):
             if not spot.empty:
                 pct_col = find_col(spot, ["涨跌幅"])
                 if pct_col is not None:
-                    hot_codes = spot[pd.to_numeric(spot[pct_col], errors="coerce").fillna(0) >= 5.0]
-                    hot_codes = self._code_series(hot_codes).unique()[:50]
+                    spot["_code"] = self._code_series(spot).fillna("").astype(str).str.zfill(6)
+                    hot_codes = spot[pd.to_numeric(spot[pct_col], errors="coerce").fillna(0) >= 5.0]["_code"].unique()[:50]
+                    name_col = find_col(spot, ["名称"])
                     for code in hot_codes:
                         event_type, event_title = self._announcement_event(code)
                         if event_type:
-                            name_col = find_col(spot, ["名称"])
-                            name_rows = spot[spot[self._code_series(spot) == code]]
+                            name_rows = spot[spot["_code"] == code]
                             name = str(name_rows[name_col].iloc[0]) if name_col and not name_rows.empty else ""
                             score = 72 if event_type == "positive" else 40
                             signals.append(

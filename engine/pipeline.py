@@ -37,7 +37,7 @@ import pandas as pd
 from .data_loader import DataLoader, safe_float
 from .data_loader import find_col as _find_col
 from .sentiment_meter import SentimentMeter
-from .trend_scanner import TrendScanner, TrendResult
+from .trend_scanner import StockCandidate, TrendScanner, TrendResult
 from .quant_guard import QuantGuard, GuardResult
 from .entry_exit import EntryExitEngine
 from .news_sentiment import NewsSentimentScorer
@@ -835,11 +835,14 @@ class Pipeline:
         if rps_mode != "real":
             try:
                 k = self.dl.daily_kline(code, days=30, date=date)
-                closes = pd.to_numeric(k["close"], errors="coerce").dropna() if not k.empty else pd.Series(dtype=float)
-                if len(closes) >= 21:
-                    from .trend_scanner import _rps
-                    rps = _rps(code, closes, spot, None)
-                    rps_mode = "approximate"
+                if not k.empty:
+                    close_col = _find_col(k, ["收盘", "close"])
+                    if close_col:
+                        closes = pd.to_numeric(k[close_col], errors="coerce").dropna()
+                        if len(closes) >= 21:
+                            from .trend_scanner import _rps
+                            rps = _rps(code, closes, spot, None)
+                            rps_mode = "approximate"
             except Exception:  # noqa: BLE001
                 pass
 

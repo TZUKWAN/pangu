@@ -19,6 +19,8 @@ import logging
 import sys
 from pathlib import Path
 
+import pandas as pd
+
 from .config import build_data_loader, load_config
 from .market_phase import MarketPhaseAnalyzer
 from .pipeline import Pipeline
@@ -223,11 +225,25 @@ def cmd_daily(args: argparse.Namespace, cfg: dict) -> int:
 def cmd_doctor(args: argparse.Namespace, cfg: dict) -> int:
     """数据源与系统健康检查。"""
     import os
-    from .trade_calendar import is_trading_day
 
     dl = build_data_loader(cfg)
     date = args.date or pd.Timestamp.now().strftime("%Y%m%d")
     report: dict[str, Any] = {"date": date, "checks": {}, "overall_status": "ok", "warnings": []}
+
+    def _is_trading_day(date_str: str) -> Optional[bool]:
+        try:
+            import akshare as ak
+            df = ak.tool_trade_date_hist_sina()
+            if df is not None and not df.empty:
+                df["trade_date"] = df["trade_date"].astype(str).str.replace("-", "")
+                return date_str in set(df["trade_date"])
+        except Exception:  # noqa: BLE001
+            pass
+        # fallback: 周末为非交易日
+        try:
+            return pd.Timestamp(date_str).weekday() < 5
+        except Exception:  # noqa: BLE001
+            return None
 
     # 1. all_spot
     try:
@@ -294,11 +310,11 @@ def cmd_doctor(args: argparse.Namespace, cfg: dict) -> int:
     report["checks"]["config"] = {"status": "ok", "path": args.config or "config/settings.yaml"}
 
     # 9. 交易日判断
-    try:
-        is_trade = is_trading_day(pd.Timestamp(date).to_pydatetime())
+    is_trade = _is_trading_day(date)
+    if is_trade is None:
+        report["checks"]["trading_day"] = {"status": "degraded", "is_trading_day": None, "note": "无法判断"}
+    else:
         report["checks"]["trading_day"] = {"status": "ok", "is_trading_day": bool(is_trade)}
-    except Exception as e:  # noqa: BLE001
-        report["checks"]["trading_day"] = {"status": "failed", "error": str(e)}
 
     # 10. 策略池快速健康
     try:
