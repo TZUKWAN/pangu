@@ -670,6 +670,27 @@ class Pipeline:
                 "all_decisions": {str(c.get("code") or ""): (c.get("xuanwu") or {}) for c in ranked},
             }
 
+        # 数据严重降级时：若严格候选为空，把观察池降级展示，避免前端完全空白
+        if not ranked and watchlist:
+            logger.warning("严格候选为空，将 %d 只观察池标的降级展示", len(watchlist))
+            fallback: list[dict[str, Any]] = []
+            for w in watchlist[: self.deep_candidate_limit]:
+                w = dict(w)
+                w.setdefault("is_watchlist", True)
+                w.setdefault("watch_reason", "数据降级，仅观察")
+                w.setdefault("recommend", {
+                    "recommend_score": 0.0,
+                    "grade": "C",
+                    "tag": "观察池",
+                    "not_statistical_probability": True,
+                })
+                w.setdefault("xuanwu", {"status": "watch", "gate_status": "watch", "blockers": ["data_degraded"]})
+                fallback.append(w)
+            ranked = fallback
+            if xuanwu_pool:
+                xuanwu_pool["summary"]["candidate_count"] = len(ranked)
+                xuanwu_pool["all_decisions"] = {str(c.get("code") or ""): (c.get("xuanwu") or {}) for c in ranked}
+
         if not recommendation_allowed:
             final_advice = advice + " 当前数据条件不足，系统未生成可信正式推荐。"
         else:

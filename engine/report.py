@@ -23,8 +23,9 @@ _STRUCTURED_TAG: dict[str, str] = {
 def render_markdown(result: PipelineResult) -> str:
     """渲染 Markdown 简报。"""
     s = result.sentiment
-    # P0 结构化源原始状态（pipeline.source_state.structured_data，dict 形态）；逐候选降级原因由此呈现
-    structured_src_state = (result.source_state or {}).get("structured_data") or {}
+    # P0 结构化源原始状态（pipeline.source_status.structured_data，dict 形态）；逐候选降级原因由此呈现
+    src_state = getattr(result, "source_status", None) or getattr(result, "source_state", None) or {}
+    structured_src_state = (src_state or {}).get("structured_data") or {}
     if not isinstance(structured_src_state, dict):
         structured_src_state = {}
     components = s.get("components", {})
