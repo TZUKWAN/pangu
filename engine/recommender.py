@@ -41,7 +41,7 @@ class Recommendation:
     # 核心推荐信息
     recommend_score: float            # 推荐度 0-100
     grade: str                        # 推荐等级 S/A/B/C
-    up_prob: float                    # 上涨概率 0-100%
+    confidence_score: float           # 综合置信度 0-100（非统计胜率，除非 calibrated=True）
     target_pct: tuple[float, float]   # 预测涨幅区间 %（保守, 乐观）
     tag: str                          # 简短理由（4-8字）
     # 交易计划（来自 entry_exit）
@@ -51,15 +51,16 @@ class Recommendation:
     risk_reward_ratio: float
     # 评分明细（透明，便于调参和解释）
     score_breakdown: dict[str, float] = field(default_factory=dict)
-    calibrated: bool = False          # 上涨概率是否经过历史校准
+    calibrated: bool = False          # confidence_score 是否经过历史校准
+    not_statistical_probability: bool = True  # 明确标注：非统计意义上的上涨概率
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d = {
             "code": self.code, "name": self.name, "board": self.board,
             "close": round(self.close, 2),
             "recommend_score": round(self.recommend_score, 1),
             "grade": self.grade,
-            "up_prob": round(self.up_prob, 1),
+            "confidence_score": round(self.confidence_score, 1),
             "target_pct": [round(self.target_pct[0], 1), round(self.target_pct[1], 1)],
             "tag": self.tag,
             "buy_point": round(self.buy_point, 2),
@@ -71,7 +72,11 @@ class Recommendation:
                 for k, v in self.score_breakdown.items()
             },
             "calibrated": self.calibrated,
+            "not_statistical_probability": self.not_statistical_probability,
         }
+        # 保留 up_prob 作为已弃用别名，避免前端/旧测试立即失效
+        d["up_prob"] = round(self.confidence_score, 1)
+        return d
 
 
 class Recommender:
@@ -222,7 +227,7 @@ class Recommender:
             "ma_bull": int(ma_bull),
             "macd_signal": int(macd_signal),
         }
-        up_prob, target_pct, calibrated = self._predict(code, recommend_score, features)
+        confidence_score, target_pct, calibrated = self._predict(code, recommend_score, features)
 
         # ---- 推荐等级 ----
         if recommend_score >= 85:
@@ -253,9 +258,10 @@ class Recommender:
             code=code, name=c.get("name", ""), board=c.get("board", ""),
             close=close,
             recommend_score=recommend_score, grade=grade,
-            up_prob=up_prob, target_pct=target_pct, tag=tag,
+            confidence_score=confidence_score, target_pct=target_pct, tag=tag,
             buy_point=buy_point, stop_loss=stop_loss, take_profit=take_profit,
             risk_reward_ratio=rr, score_breakdown=breakdown, calibrated=calibrated,
+            not_statistical_probability=not calibrated,
         )
 
     # ------------------------------------------------------------------ #
@@ -517,10 +523,11 @@ class Recommender:
     # ------------------------------------------------------------------ #
     def _predict(self, code: str, score: float, features: dict[str, Any]
                  ) -> tuple[float, tuple[float, float], bool]:
-        """预测上涨概率和涨幅区间。
+        """预测 confidence_score 和涨幅区间。
 
         优先用校准表（历史回测得到），无校准则用完整真实特征映射兜底。
-        返回 (up_prob%, (保守涨幅%, 乐观涨幅%), 是否校准)。
+        未校准时返回的 confidence_score 是模型置信度，不是统计胜率。
+        返回 (confidence_score%, (保守涨幅%, 乐观涨幅%), 是否校准)。
         """
         self._try_load_calibrator()
         calibrated = False
@@ -544,8 +551,8 @@ class Recommender:
                 pass
 
         # 兜底：基于真实特征映射（未经校准）
-        up_prob = 35.0 + (score / 100.0) * 35.0
-        up_prob = max(30.0, min(72.0, up_prob))
+        confidence_score = 35.0 + (score / 100.0) * 35.0
+        confidence_score = max(30.0, min(72.0, confidence_score))
 
         rps = safe_float(features.get("rps"), 50.0)
         ret_20d = safe_float(features.get("ret_20d"), 0.0)
@@ -566,7 +573,7 @@ class Recommender:
         target_low = max(2.0, base_ret * 100 - atr_pct * 0.6)
         target_high = max(5.0, base_ret * 100 + atr_pct * 1.2)
         target_low = min(target_low, target_high * 0.85)
-        return up_prob, (round(target_low, 1), round(target_high, 1)), calibrated
+        return confidence_score, (round(target_low, 1), round(target_high, 1)), calibrated
 
     # ------------------------------------------------------------------ #
     def _make_tag(self, breakdown: dict, reasons: list[str], news_themes: list[str] | None = None) -> str:

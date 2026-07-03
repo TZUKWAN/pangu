@@ -49,13 +49,13 @@ final_recommendations / watchlist / rejected
 
 | 策略池 | 模块 | 说明 |
 |--------|------|------|
-| 题材龙头 | `ThemeLeaderPool` | 先识别主线题材，再识别龙头/中军/补涨角色 |
-| 连板梯队 | `LimitUpPool` | 连板质量与涨停结构，一字板只作情绪锚点 |
+| 题材龙头 | `ThemeLeaderPool` | 先识别主线题材，再识别龙头/中军/补涨/首板观察/跟风角色 |
+| 连板梯队 | `LimitUpPool` | 连板质量与涨停结构：首封时间、炸板次数、封单、换手、一字板识别 |
 | 趋势回踩 | `TrendPullbackPool` | 强趋势股缩量回踩 MA10/MA20 或平台突破后承接 |
 | 超跌反弹 | `OversoldReboundPool` | 冰点修复期专用，跌深企稳信号 |
 | 小盘优质 | `SmallQualityPool` | 小市值+质量+流动性，默认只进观察池 |
-| 红利低波 | `DividendLowVolPool` | 防守池，弱市时替代展示 |
-| 事件驱动 | `EventDrivenPool` | 龙虎榜/公告/事件催化，目前基于龙虎榜上榜 |
+| 大市值低波 | `DividendLowVolPool` | 防守池（红利数据接入前暂用此名） |
+| 事件驱动 | `EventDrivenPool` | 龙虎榜席位识别 + 巨潮公告关键字事件（预增/回购/减持/问询等） |
 
 每个策略池独立产出 `StrategySignal`，不受其他池污染。
 
@@ -117,6 +117,7 @@ python -m engine.cli rps-build --workers 10
 python -m engine.cli sentiment              # 情绪温度
 python -m engine.cli market-phase           # 市场阶段/情绪周期
 python -m engine.cli pools                  # 七大策略池原始信号
+python -m engine.cli doctor                 # 数据源与系统健康检查
 python -m engine.cli scan                   # 完整选股链路 → JSON
 python -m engine.cli report                 # 生成 Markdown 简报 → data/reports/
 ```
@@ -155,14 +156,20 @@ python -m engine.web                        # http://127.0.0.1:8000
   "role": "中军",
   "market_phase_fit": true,
   "rps_mode": "real",
-  "fund_flow_status": "ok",
+  "fund_flow_status": "available",
   "entry_condition": "...",
   "invalid_condition": "...",
   "stop_loss": "...",
   "risk_flags": [],
-  "gate_status": "final"
+  "gate_status": "final",
+  "confidence_score": 62.3,
+  "calibrated": false,
+  "not_statistical_probability": true
 }
 ```
+
+> `confidence_score` 是模型置信度；只有 `calibrated: true` 时才接近统计胜率。
+> 未校准时 `not_statistical_probability` 为 `true`，不得视为真实上涨概率。
 
 ---
 

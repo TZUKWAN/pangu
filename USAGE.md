@@ -32,6 +32,12 @@ python -m engine.cli market-phase              # 市场阶段/情绪周期
 python -m engine.cli pools                     # 七大策略池原始信号
 ```
 
+### 系统健康检查
+
+```bash
+python -m engine.cli doctor                    # 检查 all_spot / kline / RPS / fund_flow / LLM / 策略池
+```
+
 ### 跑完整选股链路
 
 ```bash
@@ -126,6 +132,7 @@ python -m engine.cli daily --dry-run           # 只检查配置/通知
 | `python -m engine.cli sentiment` | 情绪温度 |
 | `python -m engine.cli market-phase` | 市场阶段 |
 | `python -m engine.cli pools` | 七大策略池 |
+| `python -m engine.cli doctor` | 数据源与系统健康检查 |
 | `python -m engine.cli scan` | 完整选股链路 → JSON |
 | `python -m engine.cli report` | 生成 Markdown 报告 |
 | `python -m engine.cli daily` | 每日盘后一键调度 |

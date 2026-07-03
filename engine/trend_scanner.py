@@ -1090,7 +1090,7 @@ class RPSCalculator:
             spot = pd.DataFrame()
         for code in codes:
             try:
-                k = self.dl.daily_kline(code, n=30, date=date)
+                k = self.dl.daily_kline(code, days=30, date=date)
                 closes = pd.to_numeric(k["close"], errors="coerce").dropna() if not k.empty else pd.Series(dtype=float)
             except Exception:  # noqa: BLE001
                 closes = pd.Series(dtype=float)

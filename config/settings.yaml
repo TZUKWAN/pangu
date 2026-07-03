@@ -160,13 +160,13 @@ strategy_framework:
     - 趋势回踩
     - 超跌反弹
     - 小盘优质
-    - 红利低波
+    - 大市值低波              # 红利数据接入前暂用此名
     - 事件驱动
   small_quality:
     max_circ_mv_yi: 100         # 小盘优质池流通市值上限（亿元）
     min_turnover: 2.0           # 最低换手率（%）
   dividend_low_vol:
-    min_mv_yi: 300              # 红利低波池最小市值（亿元）
+    min_mv_yi: 300              # 大市值低波池最小市值（亿元）
     max_volatility: 35          # 年化波动率上限（%）
   # 最终推荐闸门：当市场阶段禁止某策略时，该策略信号降级观察池
   gate:

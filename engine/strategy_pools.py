@@ -90,9 +90,9 @@ class StrategyPool(ABC):
             return "沪市主板"
         return "其他"
 
-    def _daily_kline(self, code: str, n: int = 120) -> pd.DataFrame:
+    def _daily_kline(self, code: str, n: int = 120, date: Optional[str] = None) -> pd.DataFrame:
         try:
-            return self.dl.daily_kline(code, n=n)
+            return self.dl.daily_kline(code, days=n, date=date)
         except Exception:  # noqa: BLE001
             return pd.DataFrame()
 
@@ -132,13 +132,23 @@ class ThemeLeaderPool(StrategyPool):
             logger.warning("题材龙头池缺少概念/行业字段，跳过")
             return []
 
-        # 统计板块强度：涨停数 + 连板梯队高度
+        # 市值列（用于识别中军）
+        mv_col = find_col(lu, ["总市值", "流通市值"])
+        if mv_col:
+            lu["_mv"] = pd.to_numeric(lu[mv_col], errors="coerce").fillna(0)
+        else:
+            lu["_mv"] = 0.0
+
+        # 统计板块强度
         board_score: dict[str, float] = {}
         board_max_consec: dict[str, int] = {}
-        for _, row in lu.iterrows():
-            c = str(row[concept_col]).split(",")[0]
-            board_score[c] = board_score.get(c, 0.0) + 1 + row["_consec"] * 0.5
-            board_max_consec[c] = max(board_max_consec.get(c, 0), int(row["_consec"]))
+        board_mv_median: dict[str, float] = {}
+        lu["_concept"] = lu[concept_col].astype(str).str.split(",").str[0]
+        for concept, g in lu.groupby("_concept"):
+            consec = g["_consec"].astype(int)
+            board_score[concept] = len(g) + consec.sum() * 0.5
+            board_max_consec[concept] = int(consec.max())
+            board_mv_median[concept] = float(g["_mv"].median()) if mv_col else 0.0
 
         if not board_score:
             return []
@@ -155,20 +165,50 @@ class ThemeLeaderPool(StrategyPool):
             concept = str(row[concept_col]).split(",")[0]
             if concept not in top_board_names:
                 continue
-            score = 60 + board_score.get(concept, 0) * 2 + row["_consec"] * 5
+            consec = int(row["_consec"])
+            max_consec = board_max_consec.get(concept, 1)
+            mv = safe_float(row.get("_mv")) or 0.0
+            mv_median = board_mv_median.get(concept, 0.0)
+
+            # 个股地位识别
+            if consec == max_consec and consec >= 2:
+                role = "龙头"
+            elif mv >= mv_median * 1.2 and consec >= 1:
+                role = "中军"
+            elif consec >= 2:
+                role = "补涨"
+            elif consec == 1:
+                role = "首板观察"
+            else:
+                role = "跟风"
+
+            # 后排跟风/杂毛不进入推荐
+            if role == "跟风":
+                continue
+
+            score = 60 + board_score.get(concept, 0) * 2 + consec * 5
+            if role == "龙头":
+                score += 15
+            elif role == "中军":
+                score += 10
+            elif role == "补涨":
+                score += 5
             score = min(score, 98)
+
             signals.append(
                 StrategySignal(
                     strategy_name=self.name,
                     code=code,
                     name=name,
                     board=board,
-                    trigger_reason=f"主线 {concept} 涨停强度第 {list(top_board_names).index(concept)+1}，连板 {row['_consec']} 板",
+                    trigger_reason=f"主线 {concept} {role}，{consec} 板",
                     score=score,
                     raw_features={
                         "concept": concept,
-                        "consecutive_boards": int(row["_consec"]),
+                        "role": role,
+                        "consecutive_boards": consec,
                         "board_strength": round(board_score.get(concept, 0), 2),
+                        "board_rank": list(top_board_names).index(concept) + 1,
                     },
                     allow_when_phase_forbids=False,
                 )
@@ -195,6 +235,11 @@ class LimitUpPool(StrategyPool):
 
         pct_col = find_col(lu, ["涨跌幅", "最新价"])
         consec_col = find_col(lu, ["连板数", "涨停统计"])
+        first_seal_col = find_col(lu, ["首次封板时间", "首次涨停时间"])
+        broken_col = find_col(lu, ["炸板次数"])
+        seal_amt_col = find_col(lu, ["封单金额", "涨停封单额"])
+        turnover_col = find_col(lu, ["换手率"])
+        amount_col = find_col(lu, ["成交额"])
         if consec_col:
             lu["_consec"] = pd.to_numeric(lu[consec_col].astype(str).str.extract(r"(\d+)")[0], errors="coerce").fillna(1).astype(int)
         else:
@@ -206,22 +251,94 @@ class LimitUpPool(StrategyPool):
             name = str(row["_name"]) if pd.notna(row.get("_name")) else ""
             board = self._board(code)
             consec = int(row["_consec"])
-            score = 55 + consec * 8
-            reason = f"{consec} 连板"
-            if pct_col:
-                pct = safe_float(row.get(pct_col))
-                if pct and pct > 19:
-                    score += 5
-                    reason += ", 20cm 涨停"
+
+            # 涨停类型
+            if consec == 1:
+                setup = "首板启动"
+            elif consec >= 2:
+                setup = "连板龙头"
+            else:
+                setup = "涨停"
+
+            score = 50 + consec * 8
+            reasons = [f"{consec} 连板" if consec > 1 else setup]
+
+            pct = safe_float(row.get(pct_col)) if pct_col else None
+            is_20cm = pct is not None and pct > 19
+            if is_20cm:
+                score += 5
+                reasons.append("20cm 涨停")
+
+            # 首封时间越早越好（09:30-09:40 最佳）
+            first_seal_score = 0
+            if first_seal_col:
+                t = str(row.get(first_seal_col, "")).replace(":", "")
+                if t and t[:4].isdigit():
+                    hhmm = int(t[:4])
+                    if hhmm <= 930:
+                        first_seal_score = 15
+                    elif hhmm <= 940:
+                        first_seal_score = 12
+                    elif hhmm <= 1000:
+                        first_seal_score = 8
+                    elif hhmm <= 1030:
+                        first_seal_score = 4
+
+            # 炸板次数惩罚
+            broken = 0
+            if broken_col:
+                broken = int(pd.to_numeric(row.get(broken_col), errors="coerce").fillna(0).iloc[0] if hasattr(row.get(broken_col), "iloc") else pd.to_numeric(row.get(broken_col), errors="coerce") or 0)
+            broken_penalty = broken * 8
+
+            # 封单金额 / 成交额 比例
+            seal_ratio = None
+            if seal_amt_col and amount_col:
+                seal_amt = safe_float(row.get(seal_amt_col))
+                amt = safe_float(row.get(amount_col))
+                if seal_amt is not None and amt and amt > 0:
+                    seal_ratio = seal_amt / amt
+
+            # 换手率（充分换手更好，但过高警惕）
+            turnover = safe_float(row.get(turnover_col)) if turnover_col else None
+            turnover_score = 0
+            if turnover is not None:
+                if 3 <= turnover <= 20:
+                    turnover_score = 5
+                elif 1 <= turnover < 3:
+                    turnover_score = 2
+                elif turnover > 30:
+                    turnover_score = -5
+
+            score = score + first_seal_score - broken_penalty + turnover_score
+            if seal_ratio is not None and seal_ratio > 0.1:
+                score += 5
+            score = max(20, min(score, 95))
+
+            # 一字板不可买，仅作情绪锚点
+            one_word = False
+            if first_seal_col:
+                one_word = str(row.get(first_seal_col, "")).startswith("09:25")
+
+            raw_features = {
+                "consecutive_boards": consec,
+                "setup": setup,
+                "first_seal_time": row.get(first_seal_col) if first_seal_col else None,
+                "broken_count": broken,
+                "seal_amount_ratio": round(seal_ratio, 3) if seal_ratio is not None else None,
+                "turnover_rate": turnover,
+                "is_20cm": is_20cm,
+                "one_word_limit": one_word,
+            }
+
             signals.append(
                 StrategySignal(
                     strategy_name=self.name,
                     code=code,
                     name=name,
                     board=board,
-                    trigger_reason=reason,
-                    score=min(score, 95),
-                    raw_features={"consecutive_boards": consec},
+                    trigger_reason=", ".join(reasons),
+                    score=score,
+                    raw_features=raw_features,
                 )
             )
         return sorted(signals, key=lambda s: s.score, reverse=True)[:15]
@@ -276,7 +393,7 @@ class TrendPullbackPool(StrategyPool):
                 continue
 
             # 量价/均线回踩判定
-            kline = self._daily_kline(code, n=60)
+            kline = self._daily_kline(code, n=60, date=date)
             if kline.empty or len(kline) < 30:
                 continue
             close = pd.to_numeric(kline["close"], errors="coerce").dropna()
@@ -339,7 +456,7 @@ class OversoldReboundPool(StrategyPool):
         codes = self._code_series(spot).unique()[:300]
         signals: list[StrategySignal] = []
         for code in codes:
-            kline = self._daily_kline(code, n=60)
+            kline = self._daily_kline(code, n=60, date=date)
             if kline.empty or len(kline) < 30:
                 continue
             close = pd.to_numeric(kline["close"], errors="coerce").dropna()
@@ -446,12 +563,16 @@ class SmallQualityPool(StrategyPool):
 
 
 # ---------------------------------------------------------------------------
-# 6. 红利低波防守池
+# 6. 大市值低波防守池（红利数据待接入）
 # ---------------------------------------------------------------------------
 class DividendLowVolPool(StrategyPool):
-    """高股息 + 低波动 + 大市值。用于冰点/退潮期防守。"""
+    """大市值 + 低波动。用于冰点/退潮期防守。
 
-    name = "红利低波"
+    注：当前尚未接入稳定股息率数据源，'红利'部分仅作占位。
+    真实股息率接入后，再改名为'红利低波'。
+    """
+
+    name = "大市值低波"
 
     def select(self, date: Optional[str] = None) -> list[StrategySignal]:
         date = date or pd.Timestamp.now().strftime("%Y%m%d")
@@ -476,7 +597,7 @@ class DividendLowVolPool(StrategyPool):
         for _, row in candidates.iterrows():
             code = row["_code"]
             # 波动率
-            kline = self._daily_kline(code, n=60)
+            kline = self._daily_kline(code, n=60, date=date)
             if kline.empty or len(kline) < 30:
                 continue
             close = pd.to_numeric(kline["close"], errors="coerce").dropna()
@@ -513,44 +634,138 @@ class DividendLowVolPool(StrategyPool):
 # 7. 事件驱动池
 # ---------------------------------------------------------------------------
 class EventDrivenPool(StrategyPool):
-    """公告/龙虎榜/新闻事件催化。目前基于龙虎榜上榜。"""
+    """公告/龙虎榜/新闻事件催化。
+
+    当前覆盖：
+    - 龙虎榜上榜及席位类型（机构/游资）
+    - 巨潮公告关键字：业绩预增、回购、重大合同、减持、问询、立案、解禁等
+    注：完整事件兑现程度判断依赖后续更系统的公告解析。
+    """
 
     name = "事件驱动"
 
+    POSITIVE_EVENTS = ("预增", "回购", "重大合同", "中标", "订单", "业绩快报", "股权激励", "增持")
+    NEGATIVE_EVENTS = ("减持", "问询", "立案", "处罚", "亏损", "退市", "风险", "解禁", "澄清", "终止")
+
     def select(self, date: Optional[str] = None) -> list[StrategySignal]:
         date = date or pd.Timestamp.now().strftime("%Y%m%d")
+        signals: list[StrategySignal] = []
+
+        # 1. 龙虎榜
         try:
             lhb = self.dl.longhu_bang(date)
         except Exception:  # noqa: BLE001
-            return []
-        if lhb is None or lhb.empty:
-            return []
-        lhb = lhb.copy()
-        code_col = find_col(lhb, ["代码"])
-        name_col = find_col(lhb, ["名称"])
-        if code_col is None:
-            return []
+            lhb = pd.DataFrame()
+        if lhb is not None and not lhb.empty:
+            lhb = lhb.copy()
+            code_col = find_col(lhb, ["代码"])
+            name_col = find_col(lhb, ["名称"])
+            if code_col is not None:
+                lhb["_code"] = lhb[code_col].astype(str).str.zfill(6)
+                seen = set()
+                for _, row in lhb.iterrows():
+                    code = row["_code"]
+                    if code in seen:
+                        continue
+                    seen.add(code)
+                    # 简单席位判断：机构大买加分，机构大卖减分
+                    dept = str(row.get(find_col(lhb, ["营业部", "席位"]) or "", ""))
+                    is_institution = "机构专用" in dept
+                    score = 75 if is_institution else 70
+                    signals.append(
+                        StrategySignal(
+                            strategy_name=self.name,
+                            code=code,
+                            name=str(row.get(name_col, "")) if name_col else "",
+                            board=self._board(code),
+                            trigger_reason="龙虎榜" + ("机构上榜" if is_institution else "游资活跃"),
+                            score=score,
+                            raw_features={"source": "dragon_tiger", "institution": is_institution},
+                        )
+                    )
 
-        lhb["_code"] = lhb[code_col].astype(str).str.zfill(6)
-        seen = set()
-        signals: list[StrategySignal] = []
-        for _, row in lhb.iterrows():
-            code = row["_code"]
-            if code in seen:
-                continue
-            seen.add(code)
-            signals.append(
-                StrategySignal(
-                    strategy_name=self.name,
-                    code=code,
-                    name=str(row.get(name_col, "")) if name_col else "",
-                    board=self._board(code),
-                    trigger_reason="当日龙虎榜上榜",
-                    score=70,
-                    raw_features={},
-                )
-            )
-        return signals[:15]
+        # 2. 公告事件（基于当日涨停/异动股做少量补充，避免全市场扫公告过慢）
+        try:
+            spot = self._market_spot()
+            if not spot.empty:
+                pct_col = find_col(spot, ["涨跌幅"])
+                if pct_col is not None:
+                    hot_codes = spot[pd.to_numeric(spot[pct_col], errors="coerce").fillna(0) >= 5.0]
+                    hot_codes = self._code_series(hot_codes).unique()[:50]
+                    for code in hot_codes:
+                        event_type, event_title = self._announcement_event(code)
+                        if event_type:
+                            name_col = find_col(spot, ["名称"])
+                            name_rows = spot[spot[self._code_series(spot) == code]]
+                            name = str(name_rows[name_col].iloc[0]) if name_col and not name_rows.empty else ""
+                            score = 72 if event_type == "positive" else 40
+                            signals.append(
+                                StrategySignal(
+                                    strategy_name=self.name,
+                                    code=code,
+                                    name=name,
+                                    board=self._board(code),
+                                    trigger_reason=f"公告事件: {event_title[:20]}",
+                                    score=score,
+                                    raw_features={"source": "announcement", "event_type": event_type, "event_title": event_title},
+                                )
+                            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        return sorted(signals, key=lambda s: s.score, reverse=True)[:15]
+
+    def _announcement_event(self, code: str) -> tuple[Optional[str], str]:
+        """读取最近一条公告，返回 (positive/negative/None, title)。"""
+        try:
+            rows = self._fetch_cninfo_announcements(code, page_size=5)
+        except Exception:  # noqa: BLE001
+            return None, ""
+        if not rows:
+            return None, ""
+        # 取最新一条
+        latest = rows[0]
+        title = str(latest.get("title", ""))
+        if any(k in title for k in self.NEGATIVE_EVENTS):
+            return "negative", title
+        if any(k in title for k in self.POSITIVE_EVENTS):
+            return "positive", title
+        return None, ""
+
+    def _fetch_cninfo_announcements(self, code: str, page_size: int = 5) -> list[dict[str, Any]]:
+        """简易巨潮公告抓取（无认证，可能被限流）。"""
+        import requests
+        org_id = self._cninfo_orgid(code)
+        payload = {
+            "stock": f"{code},{org_id}", "tabName": "fulltext",
+            "pageSize": str(page_size), "pageNum": "1",
+            "column": "", "category": "", "plate": "", "seDate": "",
+            "searchkey": "", "secid": "", "sortName": "", "sortType": "",
+            "isHLtitle": "true",
+        }
+        resp = requests.post(
+            "https://www.cninfo.com.cn/new/hisAnnouncement/query",
+            data=payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Referer": "https://www.cninfo.com.cn/new/disclosure"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        rows: list[dict[str, Any]] = []
+        for item in data.get("announcements") or []:
+            rows.append({
+                "title": item.get("announcementTitle", ""),
+                "type": item.get("announcementTypeName", ""),
+                "date": str(item.get("announcementTime", ""))[:10],
+            })
+        return rows
+
+    def _cninfo_orgid(self, code: str) -> str:
+        if code.startswith("6"):
+            return f"gssh0{code}"
+        if code.startswith(("8", "4")):
+            return f"gsbj0{code}"
+        return f"gssz0{code}"
 
 
 # ---------------------------------------------------------------------------
@@ -562,7 +777,7 @@ POOL_REGISTRY: dict[str, type[StrategyPool]] = {
     "趋势回踩": TrendPullbackPool,
     "超跌反弹": OversoldReboundPool,
     "小盘优质": SmallQualityPool,
-    "红利低波": DividendLowVolPool,
+    "大市值低波": DividendLowVolPool,  # 红利数据接入前暂用此名
     "事件驱动": EventDrivenPool,
 }
 

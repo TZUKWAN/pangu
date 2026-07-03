@@ -4,6 +4,7 @@
     python -m engine.cli sentiment [--date YYYYMMDD]     # 只看情绪温度
     python -m engine.cli market-phase [--date YYYYMMDD]  # 识别市场阶段/情绪周期
     python -m engine.cli pools [--date YYYYMMDD]         # 运行七大策略池
+    python -m engine.cli doctor [--date YYYYMMDD]        # 数据源与系统健康检查
     python -m engine.cli scan [--date YYYYMMDD]          # 跑完整选股链路，输出 JSON
     python -m engine.cli report [--date YYYYMMDD]        # 跑链路 + 生成 Markdown 简报
 
@@ -219,6 +220,109 @@ def cmd_daily(args: argparse.Namespace, cfg: dict) -> int:
     return 0 if summary["overall_status"] == "ok" else 1
 
 
+def cmd_doctor(args: argparse.Namespace, cfg: dict) -> int:
+    """数据源与系统健康检查。"""
+    import os
+    from .trade_calendar import is_trading_day
+
+    dl = build_data_loader(cfg)
+    date = args.date or pd.Timestamp.now().strftime("%Y%m%d")
+    report: dict[str, Any] = {"date": date, "checks": {}, "overall_status": "ok", "warnings": []}
+
+    # 1. all_spot
+    try:
+        spot = dl.all_spot()
+        rows = len(spot) if spot is not None else 0
+        report["checks"]["all_spot"] = {"status": "ok" if rows > 3000 else "failed", "rows": rows}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["all_spot"] = {"status": "failed", "error": str(e)}
+
+    # 2. daily_kline
+    try:
+        k = dl.daily_kline("000001", days=60, date=date)
+        klen = len(k) if k is not None else 0
+        report["checks"]["daily_kline"] = {"status": "ok" if klen >= 30 else "failed", "rows": klen}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["daily_kline"] = {"status": "failed", "error": str(e)}
+
+    # 3. limit_up_pool
+    try:
+        zt = dl.limit_up_pool(date)
+        zt_len = len(zt) if zt is not None else 0
+        report["checks"]["limit_up_pool"] = {"status": "ok" if zt_len > 0 else "degraded", "rows": zt_len}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["limit_up_pool"] = {"status": "failed", "error": str(e)}
+
+    # 4. limit_down_pool
+    try:
+        dt = dl.limit_down_pool(date)
+        dt_len = len(dt) if dt is not None else 0
+        report["checks"]["limit_down_pool"] = {"status": "ok", "rows": dt_len}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["limit_down_pool"] = {"status": "failed", "error": str(e)}
+
+    # 5. fund_flow
+    try:
+        ff = dl.all_fund_flow_snapshot(fast=True)
+        ff_len = len(ff) if ff is not None else 0
+        report["checks"]["fund_flow"] = {"status": "ok" if ff_len > 0 else "failed", "rows": ff_len}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["fund_flow"] = {"status": "failed", "error": str(e)}
+
+    # 6. RPS 表
+    try:
+        from . import rps as rps_mod
+        rps_map = rps_mod.load_rps_map(date, cfg.get("output", {}).get("db_path", "data/pangu.db"))
+        rps_count = len(rps_map) if rps_map else 0
+        report["checks"]["rps_table"] = {"status": "ok" if rps_count > 3000 else "failed", "count": rps_count}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["rps_table"] = {"status": "failed", "error": str(e)}
+
+    # 7. LLM 配置
+    llm_cfg = cfg.get("llm", {})
+    api_key = os.environ.get(llm_cfg.get("api_key_env", "PANGU_LLM_API_KEY"))
+    base_url = os.environ.get(llm_cfg.get("base_url_env", "PANGU_LLM_BASE_URL"))
+    model = os.environ.get(llm_cfg.get("model_env", "PANGU_LLM_MODEL"))
+    report["checks"]["llm_config"] = {
+        "status": "ok" if api_key and base_url and model else "degraded",
+        "has_api_key": bool(api_key),
+        "has_base_url": bool(base_url),
+        "has_model": bool(model),
+    }
+
+    # 8. 配置文件
+    report["checks"]["config"] = {"status": "ok", "path": args.config or "config/settings.yaml"}
+
+    # 9. 交易日判断
+    try:
+        is_trade = is_trading_day(pd.Timestamp(date).to_pydatetime())
+        report["checks"]["trading_day"] = {"status": "ok", "is_trading_day": bool(is_trade)}
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["trading_day"] = {"status": "failed", "error": str(e)}
+
+    # 10. 策略池快速健康
+    try:
+        pools = run_all_pools(dl, cfg, date)
+        pool_counts = {name: len(sigs) for name, sigs in pools.items()}
+        report["checks"]["strategy_pools"] = {"status": "ok", "counts": pool_counts}
+        if sum(pool_counts.values()) == 0:
+            report["checks"]["strategy_pools"]["status"] = "degraded"
+            report["warnings"].append("所有策略池均未产出信号")
+    except Exception as e:  # noqa: BLE001
+        report["checks"]["strategy_pools"] = {"status": "failed", "error": str(e)}
+
+    # 汇总
+    for v in report["checks"].values():
+        if v.get("status") == "failed":
+            report["overall_status"] = "failed"
+            break
+        elif v.get("status") == "degraded" and report["overall_status"] == "ok":
+            report["overall_status"] = "degraded"
+
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report["overall_status"] == "ok" else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="pangu",
@@ -242,6 +346,11 @@ def main(argv: list[str] | None = None) -> int:
     p_pools = sub.add_parser("pools", help="运行七大策略池并输出原始信号")
     p_pools.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
     p_pools.set_defaults(func=cmd_pools)
+
+    # doctor：数据源与系统健康检查
+    p_doc = sub.add_parser("doctor", help="数据源与系统健康检查")
+    p_doc.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
+    p_doc.set_defaults(func=cmd_doctor)
 
     # daily：每日盘后调度（RPS -> 快照 -> 扫描 -> 报告 -> 通知）
     p_daily = sub.add_parser("daily", help="每日盘后调度链路")

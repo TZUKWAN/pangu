@@ -430,10 +430,31 @@ class Pipeline:
                 phase_dict = phase.to_dict()
                 phase_dict["recommendation_allowed"] = recommendation_allowed
                 pooled = run_all_pools(self.dl, self.full_cfg, date)
-                candidate_map = {c.code: c for c in kept + watch_from_guard}
+
+                # 策略池候选是主入口：收集所有信号 code，补齐不在旧 kept/watch 中的候选
+                signal_codes = {s.code for sigs in pooled.values() for s in sigs}
+                # 1. 优先用 trend 扫描已产生的候选
+                candidate_map: dict[str, StockCandidate] = {c.code: c for c in trend.candidates}
+                # 2. 对策略池特有、但 trend 未覆盖的 code，现场构建候选并过护栏
+                missing_codes = signal_codes - set(candidate_map.keys())
+                if missing_codes:
+                    built = [self._build_candidate_for_code(code, date) for code in missing_codes]
+                    built = [c for c in built if c is not None]
+                    if built:
+                        extra_guarded = self.guard.filter(built, date=date)
+                        # 合并 guard 结果
+                        guarded.kept.extend(extra_guarded.kept)
+                        guarded.watch.extend(extra_guarded.watch)
+                        guarded.rejected.extend(extra_guarded.rejected)
+                        guarded.warnings.extend(extra_guarded.warnings)
+                        for c in extra_guarded.kept + extra_guarded.watch:
+                            candidate_map[c.code] = c
+
                 gate = RecommendationGate(
                     self.dl, guarded, phase_dict, self.full_cfg,
                     recommendation_allowed=recommendation_allowed,
+                    date=date,
+                    temperature=temp,
                 )
                 # LLM review 预留：目前不阻塞，避免无 LLM 时全部降级
                 gate_result = gate.pass_gate(pooled, candidate_map, llm_review_map={})
@@ -526,7 +547,7 @@ class Pipeline:
                 base = dict(base)
                 rec_dict = rec.to_dict()
                 base["recommend"] = rec_dict
-                for k in ("recommend_score", "grade", "up_prob", "target_pct", "tag", "buy_point", "stop_loss", "take_profit", "risk_reward_ratio", "score_breakdown", "calibrated"):
+                for k in ("recommend_score", "grade", "confidence_score", "up_prob", "target_pct", "tag", "buy_point", "stop_loss", "take_profit", "risk_reward_ratio", "score_breakdown", "calibrated", "not_statistical_probability"):
                     if k not in base:
                         base[k] = rec_dict.get(k)
                 out.append(base)
@@ -768,6 +789,84 @@ class Pipeline:
         except Exception as e:  # noqa: BLE001
             modules["yesterday_performance"]["warnings"].append(f"昨日表现模块计算失败: {e}")
         return modules
+
+    def _build_candidate_for_code(self, code: str, date: Optional[str] = None) -> Optional[StockCandidate]:
+        """为策略池信号中、旧 trend 路径未覆盖的 code 现场构建 StockCandidate。
+
+        仅做数据补齐（RPS/资金流/市值），不做趋势形态过滤。
+        """
+        code = str(code or "").strip().zfill(6)
+        try:
+            spot = self.dl.all_spot()
+        except Exception:  # noqa: BLE001
+            return None
+        if spot is None or spot.empty:
+            return None
+        code_col = _find_col(spot, ["代码"])
+        if code_col is None:
+            return None
+        s = spot[spot[code_col].astype(str).str.zfill(6) == code]
+        if s.empty:
+            return None
+        row = s.iloc[0]
+        name_col = _find_col(spot, ["名称"])
+        close_col = _find_col(spot, ["最新价"])
+        pct_col = _find_col(spot, ["涨跌幅"])
+        turnover_col = _find_col(spot, ["换手率"])
+        mv_col = _find_col(spot, ["流通市值", "总市值"])
+        name = str(row.get(name_col, code)) if name_col else code
+        close = safe_float(row.get(close_col)) or 0.0
+        pct = safe_float(row.get(pct_col)) or 0.0
+        turnover = safe_float(row.get(turnover_col)) or 0.0
+        mv = safe_float(row.get(mv_col)) or 0.0
+        circ_mv_yi = mv / 1e8 if mv > 0 else 0.0
+        board = "科创板" if code.startswith("68") else "创业板" if code.startswith("30") else "北交所" if code.startswith(("8", "4")) else "深市主板" if code.startswith("0") else "沪市主板" if code.startswith("60") else "其他"
+
+        # RPS
+        rps, rps_mode = 0.0, "unavailable"
+        try:
+            from . import rps as rps_mod
+            rps_map = rps_mod.load_rps_map(date, self.db_path)
+            if rps_map and code in rps_map:
+                rps = float(rps_map[code])
+                rps_mode = "real"
+        except Exception:  # noqa: BLE001
+            pass
+        if rps_mode != "real":
+            try:
+                k = self.dl.daily_kline(code, days=30, date=date)
+                closes = pd.to_numeric(k["close"], errors="coerce").dropna() if not k.empty else pd.Series(dtype=float)
+                if len(closes) >= 21:
+                    from .trend_scanner import _rps
+                    rps = _rps(code, closes, spot, None)
+                    rps_mode = "approximate"
+            except Exception:  # noqa: BLE001
+                pass
+
+        # 资金流
+        fund_inflow_days, fund_flow_status, fund_flow_date, fund_flow_net = 0, "unavailable", None, None
+        try:
+            ff = self.dl.all_fund_flow_snapshot(fast=True)
+            if ff is not None and not ff.empty:
+                ff_code_col = _find_col(ff, ["股票代码", "代码"])
+                ff_net_col = _find_col(ff, ["主力净流入-净额", "净额"])
+                if ff_code_col and ff_net_col:
+                    ff_row = ff[ff[ff_code_col].astype(str).str.zfill(6) == code]
+                    if not ff_row.empty:
+                        fund_flow_net = safe_float(ff_row.iloc[0].get(ff_net_col))
+                        fund_flow_date = datetime.now().strftime("%Y%m%d")
+                        fund_flow_status = "snapshot_only" if fund_flow_net is None or fund_flow_net <= 0 else "available"
+        except Exception:  # noqa: BLE001
+            pass
+
+        return StockCandidate(
+            code=code, name=name, board=board, close=close, pct_change=pct,
+            turnover_rate=turnover, circ_mv_yi=circ_mv_yi,
+            rps=rps, rps_mode=rps_mode,
+            fund_inflow_days=fund_inflow_days, fund_flow_status=fund_flow_status,
+            fund_flow_date=fund_flow_date, fund_flow_net=fund_flow_net,
+            is_watchlist=False,
+        )
 
     def _technical_snapshot(self, code: str, date: str) -> dict[str, Any]:
         """为推荐股票补齐 K 线、均线、MACD、成交量和量比提示。"""

@@ -53,12 +53,16 @@ class RecommendationGate:
         market_phase: dict[str, Any],
         cfg: dict[str, Any] | None = None,
         recommendation_allowed: bool = True,
+        date: Optional[str] = None,
+        temperature: float = 50.0,
     ) -> None:
         self.dl = dl
         self.guard = guard_result
         self.phase = market_phase
         self.cfg = cfg or {}
         self.entry_engine = EntryExitEngine(dl, self.cfg.get("entry_exit", {}))
+        self.date = date
+        self.temperature = temperature
 
         self.allowed_strategies = set(self.phase.get("allowed_strategies", []))
         self.forbidden_strategies = set(self.phase.get("forbidden_strategies", []))
@@ -110,8 +114,9 @@ class RecommendationGate:
                     result.gate_log.append({"code": code, "gate": "rps_real", "passed": False, "reason": item["watch_reason"]})
                     continue
 
-                # 4. 资金流确认
-                if cand and cand.fund_flow_status != "ok" and not is_watch:
+                # 4. 资金流确认（available / ok 均视为可解释）
+                valid_fund_status = {"available", "ok"}
+                if cand and cand.fund_flow_status not in valid_fund_status and not is_watch:
                     item["gate_status"] = "watch"
                     item["watch_reason"] = f"资金流状态 {cand.fund_flow_status}"
                     result.watchlist.append(item)
@@ -120,9 +125,9 @@ class RecommendationGate:
 
                 # 5. EntryExit 可执行
                 try:
-                    ee = self.entry_engine.compute(cand) if cand else None
+                    ee = self.entry_engine.compute(cand, temperature=self.temperature, date=self.date) if cand else None
                     if ee:
-                        item["entry_exit"] = ee
+                        item["entry_exit"] = ee.to_dict()
                     else:
                         item["watch_reason"] = "买卖点计算失败"
                         result.watchlist.append(item)
