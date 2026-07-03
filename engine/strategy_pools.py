@@ -375,10 +375,11 @@ class TrendPullbackPool(StrategyPool):
 
     def select(self, date: Optional[str] = None) -> list[StrategySignal]:
         date = date or pd.Timestamp.now().strftime("%Y%m%d")
-        cfg = self.cfg.get("trend", {})
-        max_candidates = cfg.get("max_candidates", 200)
-        min_rps = cfg.get("min_rps", 90)
-        min_turnover = cfg.get("min_turnover_rate", 1.0)
+        trend_cfg = self.cfg.get("trend", {})
+        stock_cfg = trend_cfg.get("stock", {})
+        max_candidates = stock_cfg.get("fallback_top_n", 600)
+        min_rps = stock_cfg.get("rps_min", 70)
+        min_turnover = stock_cfg.get("min_turnover_rate", 1.0)
 
         spot = self._market_spot()
         if spot.empty:
@@ -406,7 +407,10 @@ class TrendPullbackPool(StrategyPool):
             if rps < min_rps:
                 continue
 
-            row = spot[spot[self._code_series(spot) == code].index[0]]
+            mask = (self._code_series(spot) == code).astype(bool)
+            if not mask.any():
+                continue
+            row = spot.loc[mask].iloc[0]
             board = self._board(code)
             turnover = safe_float(row.get(vol_col))
             if turnover is None or turnover < min_turnover:

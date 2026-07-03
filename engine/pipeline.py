@@ -68,6 +68,8 @@ class PipelineResult:
     historical_mode: str = "live"  # live / historical / incomplete
     watchlist: list[dict[str, Any]] = field(default_factory=list)
     final_recommendations: list[dict[str, Any]] = field(default_factory=list)
+    strategy_signals: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    strategy_candidates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -86,6 +88,8 @@ class PipelineResult:
             "historical_mode": self.historical_mode,
             "watchlist": self.watchlist,
             "final_recommendations": self.final_recommendations,
+            "strategy_signals": self.strategy_signals,
+            "strategy_candidates": self.strategy_candidates,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -267,49 +271,58 @@ class Pipeline:
         else:
             _update_status("sentiment", "failed", "情绪温度计阶段失败")
 
-        # 冰点：直接观望，跳过趋势扫描
-        if temp < 40:
-            logger.info("情绪冰点，建议观望，跳过趋势扫描")
-            return PipelineResult(
-                date=date,
-                sentiment=sentiment,
-                boards=[],
-                candidates=[],
-                rejected=[],
-                posture_advice=advice,
-                warnings=(ms_warnings or []) + ["情绪冰点，未执行趋势扫描"],
-                market_modules=self._build_market_modules(date),
-                source_status=source_status,
-                recommendation_allowed=False,
-                historical_mode=historical_mode,
-            )
+        # ② 市场状态 + 七大策略池（新主入口，不再被旧趋势扫描阻塞）
+        strategy_framework_enabled = self.full_cfg.get("strategy_framework", {}).get("enabled", True)
+        market_phase_dict: dict[str, Any] = {}
+        pooled_signals: dict[str, list[Any]] = {}
+        if strategy_framework_enabled:
+            def _market_phase_stage() -> dict[str, Any]:
+                analyzer = MarketPhaseAnalyzer(self.dl, self.full_cfg)
+                phase = analyzer.analyze(date)
+                phase_dict = phase.to_dict()
+                phase_dict["recommendation_allowed"] = recommendation_allowed
+                return phase_dict
+            market_phase_dict = self._stage("市场状态", _market_phase_stage, timeout=60.0, default={})
 
-        # ② 趋势扫描（历史日期透传）
+            def _pools_stage() -> dict[str, list[Any]]:
+                return run_all_pools(self.dl, self.full_cfg, date)
+            pooled_signals = self._stage("策略池", _pools_stage, timeout=300.0, default={})
+            if market_phase_dict:
+                _update_status("strategy_framework", "ok", phase=market_phase_dict.get("market_phase"), pools=list(pooled_signals.keys()))
+            else:
+                _update_status("strategy_framework", "degraded", reason="市场状态分析失败")
+        else:
+            _update_status("strategy_framework", "disabled", reason="策略框架未启用")
+
+        # ③ 旧趋势扫描（作为策略池的补充数据源，不再决定系统是否继续）
         def _trend_stage() -> TrendResult:
             return self.scanner.scan(date=date)
         trend: TrendResult = self._stage("趋势扫描", _trend_stage, timeout=300.0, default=TrendResult(boards=[], candidates=[], warnings=["趋势扫描阶段超时或失败"]))
         if trend.candidates:
             _update_status("trend_scan", "ok", candidates=len(trend.candidates))
         else:
-            _update_status("trend_scan", "failed", reason="无候选股" if not trend.warnings else trend.warnings[0])
-            return PipelineResult(
-                date=date,
-                sentiment=sentiment,
-                boards=trend.boards,
-                candidates=[],
-                rejected=[],
-                posture_advice=advice,
-                warnings=(ms_warnings or []) + trend.warnings + ["趋势扫描无候选股"],
-                market_modules=self._build_market_modules(date),
-                source_status=source_status,
-                recommendation_allowed=False,
-                historical_mode=historical_mode,
-            )
+            _update_status("trend_scan", "degraded", reason="无候选股" if not trend.warnings else trend.warnings[0])
 
-        # ③ 量化护栏（历史日期一并透传）
+        # 合并候选：策略池信号为主，旧趋势扫描为辅
+        all_candidates: list[StockCandidate] = []
+        candidate_map: dict[str, StockCandidate] = {c.code: c for c in trend.candidates}
+        strategy_signal_codes: set[str] = set()
+        if strategy_framework_enabled and pooled_signals:
+            for sigs in pooled_signals.values():
+                for s in sigs:
+                    code = s.code
+                    strategy_signal_codes.add(code)
+                    if code not in candidate_map:
+                        built = self._build_candidate_for_code(code, date)
+                        if built:
+                            candidate_map[code] = built
+        all_candidates = list(candidate_map.values())
+        strategy_candidates = [candidate_map[code].to_dict() for code in strategy_signal_codes if code in candidate_map]
+
+        # ④ 量化护栏（对合并后的候选池统一过滤）
         def _guard_stage() -> GuardResult:
-            return self.guard.filter(trend.candidates, date=date)
-        guarded: GuardResult = self._stage("量化护栏", _guard_stage, timeout=120.0, default=GuardResult(kept=trend.candidates, watch=[], rejected=[], warnings=["护栏阶段超时，原池通过"]))
+            return self.guard.filter(all_candidates, date=date)
+        guarded: GuardResult = self._stage("量化护栏", _guard_stage, timeout=120.0, default=GuardResult(kept=all_candidates, watch=[], rejected=[], warnings=["护栏阶段超时，原池通过"]))
         kept = guarded.kept
         watch_from_guard = guarded.watch
         if guarded.rejected:
@@ -418,53 +431,6 @@ class Pipeline:
 
         if watchlist:
             logger.info("%d 只进入观察池，不进入最终推荐", len(watchlist))
-
-        # ③⑤ 策略框架：市场阶段 + 7 大策略池 + 最终推荐闸门
-        strategy_framework_enabled = self.full_cfg.get("strategy_framework", {}).get("enabled", True)
-        gate_result = None
-        market_phase_dict: dict[str, Any] = {}
-        if strategy_framework_enabled:
-            def _strategy_framework_stage() -> tuple[dict[str, Any], Any]:
-                analyzer = MarketPhaseAnalyzer(self.dl, self.full_cfg)
-                phase = analyzer.analyze(date)
-                phase_dict = phase.to_dict()
-                phase_dict["recommendation_allowed"] = recommendation_allowed
-                pooled = run_all_pools(self.dl, self.full_cfg, date)
-
-                # 策略池候选是主入口：收集所有信号 code，补齐不在旧 kept/watch 中的候选
-                signal_codes = {s.code for sigs in pooled.values() for s in sigs}
-                # 1. 优先用 trend 扫描已产生的候选
-                candidate_map: dict[str, StockCandidate] = {c.code: c for c in trend.candidates}
-                # 2. 对策略池特有、但 trend 未覆盖的 code，现场构建候选并过护栏
-                missing_codes = signal_codes - set(candidate_map.keys())
-                if missing_codes:
-                    built = [self._build_candidate_for_code(code, date) for code in missing_codes]
-                    built = [c for c in built if c is not None]
-                    if built:
-                        extra_guarded = self.guard.filter(built, date=date)
-                        # 合并 guard 结果
-                        guarded.kept.extend(extra_guarded.kept)
-                        guarded.watch.extend(extra_guarded.watch)
-                        guarded.rejected.extend(extra_guarded.rejected)
-                        guarded.warnings.extend(extra_guarded.warnings)
-                        for c in extra_guarded.kept + extra_guarded.watch:
-                            candidate_map[c.code] = c
-
-                gate = RecommendationGate(
-                    self.dl, guarded, phase_dict, self.full_cfg,
-                    recommendation_allowed=recommendation_allowed,
-                    date=date,
-                    temperature=temp,
-                )
-                # LLM review 预留：目前不阻塞，避免无 LLM 时全部降级
-                gate_result = gate.pass_gate(pooled, candidate_map, llm_review_map={})
-                return phase_dict, gate_result
-            fw_result = self._stage("策略框架", _strategy_framework_stage, timeout=300.0, default=({}, None))
-            if isinstance(fw_result, tuple) and len(fw_result) == 2:
-                market_phase_dict, gate_result = fw_result
-                _update_status("strategy_framework", "ok", pools=list((gate_result.to_dict() if gate_result else {}).keys()) if gate_result else [])
-            else:
-                _update_status("strategy_framework", "failed", reason="策略框架阶段未返回结果")
 
         # 历史模式：若 all_spot 不是历史数据，则标记 incomplete
         if historical_mode == "historical":
@@ -610,11 +576,39 @@ class Pipeline:
             if code in decisions:
                 c["xuanwu"] = decisions[code]
 
-        # 最终推荐闸门：优先使用策略框架产出；未启用框架时回退到 xuanwu 决策
+        # ⑨ 最终推荐闸门：策略框架启用时由闸门统一决定 final/watch/rejected
+        gate_result = None
+        if strategy_framework_enabled:
+            llm_review_map: dict[str, dict[str, Any]] = {}
+            if self.full_cfg.get("llm", {}).get("enable_review", False):
+                llm_review_map = {
+                    code: {"passed": (d.get("verdict") == "推荐"), "review": d}
+                    for code, d in (debates or {}).items()
+                }
+
+            def _gate_stage() -> Any:
+                rg = RecommendationGate(
+                    self.dl,
+                    guarded,
+                    market_phase_dict,
+                    cfg=self.full_cfg,
+                    recommendation_allowed=recommendation_allowed,
+                    date=date,
+                    temperature=temp,
+                )
+                return rg.pass_gate(
+                    pooled_signals,
+                    candidate_map,
+                    candidates=ranked,
+                    llm_review_map=llm_review_map or None,
+                )
+            gate_result = self._stage("推荐闸门", _gate_stage, timeout=120.0, default=None)
+
         final_recommendations: list[dict[str, Any]] = []
         if gate_result and recommendation_allowed:
             final_recommendations = gate_result.final_recommendations[: self.pick_count]
         elif recommendation_allowed:
+            # 未启用策略框架时回退到 xuanwu 决策
             for c in ranked:
                 if c.get("is_watchlist"):
                     continue
@@ -661,9 +655,14 @@ class Pipeline:
             recommendation_allowed=recommendation_allowed and len(final_recommendations) > 0,
             historical_mode=historical_mode,
         )
-        # 额外挂载 watchlist / final_recommendations 供报告使用
+        # 额外挂载 watchlist / final_recommendations / 策略池原始产出 供报告使用
         result.watchlist = watchlist
         result.final_recommendations = final_recommendations
+        result.strategy_signals = {
+            name: [s.to_dict() for s in sigs]
+            for name, sigs in (pooled_signals or {}).items()
+        }
+        result.strategy_candidates = strategy_candidates
         return result
 
     def _xuanwu_source_status(self, source_status: dict[str, Any]) -> dict[str, Any]:

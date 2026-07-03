@@ -72,6 +72,7 @@ class RecommendationGate:
         self,
         pooled_signals: dict[str, list[StrategySignal]],
         candidate_map: dict[str, StockCandidate],
+        candidates: Optional[list[dict[str, Any]]] = None,
         llm_review_map: Optional[dict[str, dict[str, Any]]] = None,
     ) -> GateResult:
         result = GateResult()
@@ -82,82 +83,154 @@ class RecommendationGate:
         watch_codes = {c.code for c in self.guard.watch}
         rejected_codes = {item["code"] for item in self.guard.rejected}
 
+        candidate_dict: dict[str, dict[str, Any]] = {}
+        if candidates:
+            candidate_dict = {str(c.get("code")): c for c in candidates if c.get("code")}
+
+        # 同一 code 取最高分的策略信号
+        best_signal: dict[str, tuple[str, StrategySignal]] = {}
         for strategy_name, signals in pooled_signals.items():
             for sig in signals:
                 code = sig.code
-                cand = candidate_map.get(code)
+                existing = best_signal.get(code)
+                if existing is None or sig.score > existing[1].score:
+                    best_signal[code] = (strategy_name, sig)
+
+        all_codes = set(candidate_map.keys()) | set(candidate_dict.keys())
+
+        for code in all_codes:
+            cand = candidate_map.get(code)
+            cand_dict = candidate_dict.get(code)
+            signal_pair = best_signal.get(code)
+
+            if signal_pair:
+                strategy_name, sig = signal_pair
                 item = self._build_item(sig, cand)
-
-                # 1. 市场阶段
-                if not self._phase_allowed(strategy_name, sig):
-                    item["gate_status"] = "watch"
-                    item["watch_reason"] = f"当前阶段 {self.phase.get('market_phase')} 禁止策略 {strategy_name}"
-                    result.watchlist.append(item)
-                    result.gate_log.append({"code": code, "gate": "phase", "passed": False, "reason": item["watch_reason"]})
-                    continue
-
-                # 2. QuantGuard
-                if code in rejected_codes:
-                    item["gate_status"] = "rejected"
-                    item["reject_reason"] = next((i["reason"] for i in self.guard.rejected if i["code"] == code), "QuantGuard 拒绝")
-                    result.rejected.append(item)
-                    result.gate_log.append({"code": code, "gate": "guard", "passed": False, "reason": item["reject_reason"]})
-                    continue
-
-                is_watch = code in watch_codes
-
-                # 3. 数据真实性：正式推荐必须有真实 RPS
-                if cand and cand.rps_mode != "real" and not is_watch:
-                    item["gate_status"] = "watch"
-                    item["watch_reason"] = f"RPS 模式为 {cand.rps_mode}"
-                    result.watchlist.append(item)
-                    result.gate_log.append({"code": code, "gate": "rps_real", "passed": False, "reason": item["watch_reason"]})
-                    continue
-
-                # 4. 资金流确认（available / ok 均视为可解释）
-                valid_fund_status = {"available", "ok"}
-                if cand and cand.fund_flow_status not in valid_fund_status and not is_watch:
-                    item["gate_status"] = "watch"
-                    item["watch_reason"] = f"资金流状态 {cand.fund_flow_status}"
-                    result.watchlist.append(item)
-                    result.gate_log.append({"code": code, "gate": "fund_flow", "passed": False, "reason": item["watch_reason"]})
-                    continue
-
-                # 5. EntryExit 可执行
-                try:
-                    ee = self.entry_engine.compute(cand, temperature=self.temperature, date=self.date) if cand else None
-                    if ee:
-                        item["entry_exit"] = ee.to_dict()
-                    else:
-                        item["watch_reason"] = "买卖点计算失败"
-                        result.watchlist.append(item)
-                        result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
-                        continue
-                except Exception as exc:  # noqa: BLE001
-                    item["watch_reason"] = f"买卖点异常: {exc}"
-                    result.watchlist.append(item)
-                    result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
-                    continue
-
-                # 6. LLM 复核（若启用）
-                review = llm_review_map.get(code) if llm_review_map else None
-                if self.cfg.get("llm", {}).get("enable_review", False):
-                    if not review or not review.get("passed"):
-                        item["watch_reason"] = "LLM 复核未通过"
-                        result.watchlist.append(item)
-                        result.gate_log.append({"code": code, "gate": "llm_review", "passed": False, "reason": item["watch_reason"]})
-                        continue
-                    item["llm_review"] = review
-
-                item["gate_status"] = "final"
-                result.final_recommendations.append(item)
-                result.gate_log.append({"code": code, "gate": "final", "passed": True})
+                if cand_dict:
+                    item.setdefault("entry_exit", cand_dict.get("entry_exit"))
+                    item.setdefault("technical", cand_dict.get("technical"))
+                    item.setdefault("debate", cand_dict.get("debate"))
+                    item.setdefault("xuanwu", cand_dict.get("xuanwu"))
+                    item.setdefault("recommend", cand_dict.get("recommend"))
+                self._judge_strategy_signal(code, strategy_name, sig, cand, item, result, watch_codes, rejected_codes, llm_review_map)
+            else:
+                # 旧 trend 扫描补充候选：无策略信号，只过 guard，不进入正式推荐
+                item = dict(cand_dict) if cand_dict else (cand.to_dict() if cand else {})
+                item.setdefault("gate_status", "pending")
+                item.setdefault("strategy_name", "trend_supplement")
+                item.setdefault("score", 0)
+                self._judge_trend_only(code, cand, item, result, watch_codes, rejected_codes)
 
         # 去重：同一 code 多个策略取最高 score
         result.final_recommendations = self._dedup(result.final_recommendations)
         result.watchlist = self._dedup(result.watchlist)
         result.rejected = self._dedup(result.rejected)
         return result
+
+    def _judge_strategy_signal(
+        self,
+        code: str,
+        strategy_name: str,
+        sig: StrategySignal,
+        cand: Optional[StockCandidate],
+        item: dict[str, Any],
+        result: GateResult,
+        watch_codes: set[str],
+        rejected_codes: set[str],
+        llm_review_map: Optional[dict[str, dict[str, Any]]] = None,
+    ) -> None:
+        # 1. 市场阶段
+        if not self._phase_allowed(strategy_name, sig):
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"当前阶段 {self.phase.get('market_phase')} 禁止策略 {strategy_name}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "phase", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 2. QuantGuard
+        if code in rejected_codes:
+            item["gate_status"] = "rejected"
+            item["reject_reason"] = next((i["reason"] for i in self.guard.rejected if i["code"] == code), "QuantGuard 拒绝")
+            result.rejected.append(item)
+            result.gate_log.append({"code": code, "gate": "guard", "passed": False, "reason": item["reject_reason"]})
+            return
+
+        is_watch = code in watch_codes
+
+        # 3. 数据真实性：正式推荐必须有真实 RPS
+        if cand and cand.rps_mode != "real" and not is_watch:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"RPS 模式为 {cand.rps_mode}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "rps_real", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 4. 资金流确认（available / ok 均视为可解释）
+        valid_fund_status = {"available", "ok"}
+        if cand and cand.fund_flow_status not in valid_fund_status and not is_watch:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"资金流状态 {cand.fund_flow_status}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "fund_flow", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 5. EntryExit 可执行（优先使用 Pipeline 已计算的买卖点）
+        if item.get("entry_exit") and item["entry_exit"].get("buy_points"):
+            pass
+        else:
+            try:
+                ee = self.entry_engine.compute(cand, temperature=self.temperature, date=self.date) if cand else None
+                if ee:
+                    item["entry_exit"] = ee.to_dict()
+                else:
+                    item["watch_reason"] = "买卖点计算失败"
+                    result.watchlist.append(item)
+                    result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
+                    return
+            except Exception as exc:  # noqa: BLE001
+                item["watch_reason"] = f"买卖点异常: {exc}"
+                result.watchlist.append(item)
+                result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
+                return
+
+        # 6. LLM 复核（若启用）
+        review = llm_review_map.get(code) if llm_review_map else None
+        if self.cfg.get("llm", {}).get("enable_review", False):
+            if not review or not review.get("passed"):
+                item["watch_reason"] = "LLM 复核未通过"
+                result.watchlist.append(item)
+                result.gate_log.append({"code": code, "gate": "llm_review", "passed": False, "reason": item["watch_reason"]})
+                return
+            item["llm_review"] = review
+
+        item["gate_status"] = "final"
+        result.final_recommendations.append(item)
+        result.gate_log.append({"code": code, "gate": "final", "passed": True})
+
+    def _judge_trend_only(
+        self,
+        code: str,
+        cand: Optional[StockCandidate],
+        item: dict[str, Any],
+        result: GateResult,
+        watch_codes: set[str],
+        rejected_codes: set[str],
+    ) -> None:
+        if code in rejected_codes:
+            item["gate_status"] = "rejected"
+            item["reject_reason"] = next((i["reason"] for i in self.guard.rejected if i["code"] == code), "QuantGuard 拒绝")
+            result.rejected.append(item)
+            result.gate_log.append({"code": code, "gate": "guard", "passed": False, "reason": item["reject_reason"]})
+            return
+
+        if code in watch_codes:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "QuantGuard 护栏观察"
+        else:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "旧趋势扫描补充候选，无策略池信号"
+        result.watchlist.append(item)
+        result.gate_log.append({"code": code, "gate": "strategy_signal", "passed": False, "reason": item["watch_reason"]})
 
     def _phase_allowed(self, strategy_name: str, sig: StrategySignal) -> bool:
         if not sig.respect_market_phase and sig.allow_when_phase_forbids:
