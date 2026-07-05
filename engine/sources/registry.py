@@ -65,6 +65,7 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
         AdataFundFlowProvider,
         AdataSpotProvider,
         BaostockDailyKlineProvider,
+        BaiduDailyKlineProvider,
         BaiduSpotProvider,
         EastmoneyDailyKlineProvider,
         EastmoneyFundFlowProvider,
@@ -96,15 +97,16 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
     registry.register(EfinanceSpotProvider())
     registry.register(LocalSnapshotProvider("all_spot", modes=("live",)))
 
-    # daily_kline: strict snapshot/cache in snapshot mode; stale only diagnostic/live tail fallback.
+    # daily_kline: mootdx (TCP, no IP block) 提前到东财之前；百度日K带MA作为补充。
     registry.register(ExactSnapshotProvider("daily_kline", modes=("snapshot",)))
     registry.register(StaleCacheProvider("daily_kline", modes=("diagnostic",)))
     registry.register(SinaDailyKlineProvider())
     registry.register(TencentDailyKlineProvider())
+    registry.register(MootdxDailyKlineProvider())
+    registry.register(BaiduDailyKlineProvider())
     registry.register(AdataDailyKlineProvider())
     registry.register(BaostockDailyKlineProvider())
     registry.register(EastmoneyDailyKlineProvider())
-    registry.register(MootdxDailyKlineProvider())
     registry.register(StaleCacheProvider("daily_kline", modes=("live",)))
 
     # fund_flow: unavailable is explicit final source, not an exception.

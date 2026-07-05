@@ -122,7 +122,23 @@ def test_multisource_all_spot_fallback_to_snapshot(no_akshare, tmp_path):
     assert result.iloc[0]["代码"] == "000002"
 
 
-def test_multisource_daily_kline_fallback_to_stale_cache(no_akshare, tmp_path):
+def test_multisource_daily_kline_fallback_to_stale_cache(no_akshare, tmp_path, monkeypatch):
+    """当所有真实 daily_kline provider 失败时，fallback 到 stale cache。"""
+    from engine.source_quality import failed_result
+    from engine.sources.providers.core import (
+        SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
+        BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
+        EastmoneyDailyKlineProvider,
+    )
+
+    def fail(self, context):
+        return failed_result(source=self.name, kind=self.kind, warning="forced_fail", data_mode=context.mode)
+
+    for cls in (SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
+                BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
+                EastmoneyDailyKlineProvider):
+        monkeypatch.setattr(cls, "fetch", fail)
+
     cache_dir = tmp_path / "cache"
     snapshot_dir = tmp_path / "snapshots"
     cache_dir.mkdir(parents=True)
@@ -146,8 +162,25 @@ def test_multisource_daily_kline_fallback_to_stale_cache(no_akshare, tmp_path):
     assert result.iloc[0]["日期"] == "20250101"
 
 
-def test_multisource_empty_when_all_sources_fail(no_akshare, tmp_path):
+def test_multisource_empty_when_all_sources_fail(no_akshare, tmp_path, monkeypatch):
     """全部数据源不可用时返回空 DataFrame，不抛异常。"""
+    from engine.source_quality import failed_result
+    from engine.sources.providers.core import (
+        SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
+        BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
+        EastmoneyDailyKlineProvider, ThsSpotProvider, TencentSpotProvider, SinaSpotProvider,
+        BaiduSpotProvider, AdataSpotProvider, EfinanceSpotProvider,
+    )
+
+    def fail(self, context):
+        return failed_result(source=self.name, kind=self.kind, warning="forced_fail", data_mode=context.mode)
+
+    for cls in (SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
+                BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
+                EastmoneyDailyKlineProvider, ThsSpotProvider, TencentSpotProvider, SinaSpotProvider,
+                BaiduSpotProvider, AdataSpotProvider, EfinanceSpotProvider):
+        monkeypatch.setattr(cls, "fetch", fail)
+
     dl = MultiSourceDataLoader(
         cache_dir=tmp_path / "cache",
         snapshot_dir=tmp_path / "snapshots",

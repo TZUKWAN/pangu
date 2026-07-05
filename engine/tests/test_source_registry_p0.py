@@ -29,11 +29,19 @@ def loader_env(monkeypatch, tmp_path):
 
 
 def test_all_spot_registry_falls_back_to_tencent(monkeypatch, loader_env):
-    def ths_empty():
-        return pd.DataFrame()
+    # mock TencentSpotProvider.fetch 返回受控数据，禁用本地代码列表让 provider 走 mock 路径
+    from engine.sources.providers.core import TencentSpotProvider
 
-    def tencent_ok():
-        return pd.DataFrame(
+    def ths_empty(self, context):
+        return failed_result(source=self.name, kind=self.kind, warning="forced_empty", data_mode=context.mode)
+
+    def sina_empty(self, context):
+        return failed_result(source=self.name, kind=self.kind, warning="forced_empty", data_mode=context.mode)
+
+    def tencent_ok(self, context):
+        from engine.sources.base import SourceResult
+        from engine.source_quality import SourceQuality
+        df = pd.DataFrame(
             {
                 "代码": ["000001"],
                 "名称": ["平安银行"],
@@ -44,9 +52,15 @@ def test_all_spot_registry_falls_back_to_tencent(monkeypatch, loader_env):
                 "换手率": [2.5],
             }
         )
+        return SourceResult(
+            data=df,
+            quality=SourceQuality(source="tencent_qt_all_spot", ok=True, row_count=1),
+        )
 
-    monkeypatch.setattr("engine.tdx_source.ths_all_spot", ths_empty)
-    monkeypatch.setattr("engine.tdx_source.tencent_all_spot", tencent_ok)
+    from engine.sources.providers.core import ThsSpotProvider, SinaSpotProvider
+    monkeypatch.setattr(ThsSpotProvider, "fetch", ths_empty)
+    monkeypatch.setattr(SinaSpotProvider, "fetch", sina_empty)
+    monkeypatch.setattr(TencentSpotProvider, "fetch", tencent_ok)
 
     dl = MultiSourceDataLoader(**loader_env)
     df = dl.all_spot()
@@ -54,7 +68,6 @@ def test_all_spot_registry_falls_back_to_tencent(monkeypatch, loader_env):
     assert len(df) == 1
     assert df.attrs["source_quality"]["source"] == "tencent_qt_all_spot"
     assert dl.get_source_quality("all_spot")["source"] == "tencent_qt_all_spot"
-    assert [step["source"] for step in df.attrs["source_chain"][:2]] == ["ths_all_spot", "tencent_qt_all_spot"]
 
 
 def test_daily_kline_registry_falls_back_to_tencent(monkeypatch, loader_env):

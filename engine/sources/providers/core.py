@@ -238,9 +238,83 @@ class TencentSpotProvider(SourceProvider):
         t0 = time.monotonic()
         if os.environ.get("PANGU_TDX_FALLBACK", "1") == "0":
             return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="disabled_by_PANGU_TDX_FALLBACK", data_mode=context.mode)
-        from engine import tdx_source
+        # 本地快照代码列表优先（绕开东财/adata）
+        snap_date = None
+        if context.effective_date:
+            d = str(context.effective_date)
+            snap_date = f"{d[:4]}-{d[4:6]}-{d[6:8]}" if len(d) == 8 and d.isdigit() else d
+        codes = _all_a_share_codes(snapshot_date=snap_date)
+        if not codes:
+            # 回退到 tdx_source
+            try:
+                from engine import tdx_source
+                return _quality(tdx_source.tencent_all_spot(), source=self.name, kind=self.kind, t0=t0, ctx=context)
+            except Exception:
+                return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="code_list_unavailable", data_mode=context.mode)
 
-        return _quality(tdx_source.tencent_all_spot(), source=self.name, kind=self.kind, t0=t0, ctx=context)
+        rows: list[dict[str, Any]] = []
+        deadline = time.monotonic() + 18.0
+        for i in range(0, len(codes), 250):
+            if time.monotonic() > deadline:
+                break
+            batch = ",".join(_market_prefix(c) for c in codes[i:i + 250])
+            url = f"https://qt.gtimg.cn/q={batch}"
+            try:
+                text = _urlopen_text(url, timeout=8.0, headers={"User-Agent": "Mozilla/5.0"})
+            except Exception:
+                continue
+            for line in text.split(";"):
+                line = line.strip()
+                if not line.startswith("v_") or "=" not in line:
+                    continue
+                try:
+                    fields = line.split('"')[1].split("~")
+                except Exception:
+                    continue
+                if len(fields) < 49:
+                    continue
+                code = str(fields[2]) if len(fields) > 2 else ""
+                if not code:
+                    continue
+                latest = _as_float(fields[3])
+                prev_close = _as_float(fields[4])
+                open_price = _as_float(fields[5])
+                volume = _as_float(fields[6])   # 手
+                amount = _as_float(fields[37]) if len(fields) > 37 else None  # 成交额(万)
+                change_pct = _as_float(fields[32])
+                high = _as_float(fields[33]) if len(fields) > 33 else None
+                low = _as_float(fields[34]) if len(fields) > 34 else None
+                turnover = _as_float(fields[38])          # 换手率 %
+                pe_ttm = _as_float(fields[39])            # PE(TTM)
+                total_mv = _as_float(fields[45])          # 总市值(亿)
+                circ_mv = _as_float(fields[44]) if len(fields) > 44 else None  # 流通市值(亿)
+                pb = _as_float(fields[46])                # PB
+                limit_up = _as_float(fields[47])          # 涨停价
+                limit_down = _as_float(fields[48])        # 跌停价
+                volume_ratio = _as_float(fields[49]) if len(fields) > 49 else None  # 量比
+                rows.append({
+                    "代码": code,
+                    "名称": fields[1],
+                    "最新价": latest,
+                    "涨跌幅": change_pct,
+                    "成交量": volume * 100 if volume is not None else None,  # 手→股
+                    "成交额": amount * 10000 if amount is not None else None,  # 万→元
+                    "今开": open_price,
+                    "昨收": prev_close,
+                    "最高": high,
+                    "最低": low,
+                    "换手率": turnover,
+                    "市盈率-动态": pe_ttm,
+                    "市净率": pb,
+                    "总市值": total_mv * 1e8 if total_mv is not None else None,  # 亿→元
+                    "流通市值": circ_mv * 1e8 if circ_mv is not None else None,
+                    "涨停价": limit_up,
+                    "跌停价": limit_down,
+                    "量比": volume_ratio,
+                })
+        if not rows:
+            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
+        return _quality(pd.DataFrame(rows), source=self.name, kind=self.kind, t0=t0, ctx=context)
 
 
 class SinaSpotProvider(SourceProvider):
@@ -586,6 +660,81 @@ class EastmoneyDailyKlineProvider(SourceProvider):
                 "涨跌幅": _as_float(parts[8]),
                 "涨跌额": _as_float(parts[9]),
                 "换手率": _as_float(parts[10]),
+            })
+        if not rows:
+            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
+        return _quality(pd.DataFrame(rows), source=self.name, kind=self.kind, t0=t0, ctx=context)
+
+
+class BaiduDailyKlineProvider(SourceProvider):
+    name = "baidu_gushitong_daily"
+    kind = "daily_kline"
+    modes = ("live", "diagnostic")
+
+    def fetch(self, context: SourceContext) -> SourceResult:
+        t0 = time.monotonic()
+        symbol = str(context.symbol or "").zfill(6)
+        if not symbol:
+            return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="symbol_missing", data_mode=context.mode)
+        days = max(1, int(context.days or 60))
+        # 百度用 start_time 长日期格式，回溯 days*2 自然日保证足够交易日
+        start_dt = datetime.now() - timedelta(days=days * 2)
+        params = {
+            "all": "1", "isIndex": "false", "isBk": "false", "isBlock": "false",
+            "isFutures": "false", "isStock": "true", "newFormat": "1",
+            "group": "quotation_kline_ab", "finClientType": "pc",
+            "code": symbol,
+            "start_time": start_dt.strftime("%Y-%m-%d 00:00:00"),
+            "ktype": "1",  # 日K
+        }
+        query = urllib.parse.urlencode(params)
+        url = f"https://finance.pae.baidu.com/selfselect/getstockquotation?{query}"
+        try:
+            text = _urlopen_text(
+                url, timeout=10.0,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://gushitong.baidu.com/",
+                },
+            )
+            data = json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, error=str(exc), data_mode=context.mode)
+        if str(data.get("ResultCode")) != "0":
+            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning=f"result_code_{data.get('ResultCode')}", data_mode=context.mode)
+        result = data.get("Result") or {}
+        nmd = result.get("newMarketData") or {}
+        keys = nmd.get("keys") or []
+        md = str(nmd.get("marketData") or "")
+        if not keys or not md:
+            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
+        # 列索引映射
+        idx = {k: i for i, k in enumerate(keys)}
+        rows: list[dict[str, Any]] = []
+        for line in md.split(";"):
+            parts = line.split(",")
+            if len(parts) < len(keys):
+                continue
+            def _g(col: str) -> float | None:
+                i = idx.get(col)
+                if i is None or i >= len(parts):
+                    return None
+                return _as_float(parts[i])
+            rows.append({
+                "日期": parts[idx["time"]] if "time" in idx else "",
+                "股票代码": symbol,
+                "开盘": _g("open"),
+                "收盘": _g("close"),
+                "最高": _g("high"),
+                "最低": _g("low"),
+                "成交量": _g("volume"),
+                "成交额": _g("amount"),
+                "涨跌幅": _g("ratio"),
+                "涨跌额": _g("range"),
+                "换手率": _g("turnoverratio"),
+                "MA5": _g("ma5avgprice"),
+                "MA10": _g("ma10avgprice"),
+                "MA20": _g("ma20avgprice"),
             })
         if not rows:
             return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
