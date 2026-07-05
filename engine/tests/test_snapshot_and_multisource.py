@@ -128,15 +128,13 @@ def test_multisource_daily_kline_fallback_to_stale_cache(no_akshare, tmp_path, m
     from engine.sources.providers.core import (
         SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
         BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
-        EastmoneyDailyKlineProvider,
     )
 
     def fail(self, context):
         return failed_result(source=self.name, kind=self.kind, warning="forced_fail", data_mode=context.mode)
 
     for cls in (SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
-                BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
-                EastmoneyDailyKlineProvider):
+                BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider):
         monkeypatch.setattr(cls, "fetch", fail)
 
     cache_dir = tmp_path / "cache"
@@ -168,8 +166,8 @@ def test_multisource_empty_when_all_sources_fail(no_akshare, tmp_path, monkeypat
     from engine.sources.providers.core import (
         SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
         BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
-        EastmoneyDailyKlineProvider, ThsSpotProvider, TencentSpotProvider, SinaSpotProvider,
-        BaiduSpotProvider, AdataSpotProvider, EfinanceSpotProvider,
+        ThsSpotProvider, TencentSpotProvider, SinaSpotProvider,
+        BaiduSpotProvider, AdataSpotProvider,
     )
 
     def fail(self, context):
@@ -177,8 +175,8 @@ def test_multisource_empty_when_all_sources_fail(no_akshare, tmp_path, monkeypat
 
     for cls in (SinaDailyKlineProvider, TencentDailyKlineProvider, MootdxDailyKlineProvider,
                 BaiduDailyKlineProvider, AdataDailyKlineProvider, BaostockDailyKlineProvider,
-                EastmoneyDailyKlineProvider, ThsSpotProvider, TencentSpotProvider, SinaSpotProvider,
-                BaiduSpotProvider, AdataSpotProvider, EfinanceSpotProvider):
+                ThsSpotProvider, TencentSpotProvider, SinaSpotProvider,
+                BaiduSpotProvider, AdataSpotProvider):
         monkeypatch.setattr(cls, "fetch", fail)
 
     dl = MultiSourceDataLoader(

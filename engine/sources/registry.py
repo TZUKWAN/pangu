@@ -67,9 +67,6 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
         BaostockDailyKlineProvider,
         BaiduDailyKlineProvider,
         BaiduSpotProvider,
-        EastmoneyDailyKlineProvider,
-        EastmoneyFundFlowProvider,
-        EfinanceSpotProvider,
         ExactSnapshotProvider,
         LocalSnapshotProvider,
         MootdxDailyKlineProvider,
@@ -80,7 +77,6 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
         TencentSpotProvider,
         ThsFundFlowProvider,
         ThsSpotProvider,
-        TushareMoneyFlowProvider,
         UnavailableProvider,
     )
 
@@ -94,10 +90,9 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
     registry.register(SinaSpotProvider())
     registry.register(BaiduSpotProvider())
     registry.register(AdataSpotProvider())
-    registry.register(EfinanceSpotProvider())
     registry.register(LocalSnapshotProvider("all_spot", modes=("live",)))
 
-    # daily_kline: mootdx (TCP, no IP block) 提前到东财之前；百度日K带MA作为补充。
+    # daily_kline: mootdx (TCP, no IP block) + 百度日K带MA 作为优选源。
     registry.register(ExactSnapshotProvider("daily_kline", modes=("snapshot",)))
     registry.register(StaleCacheProvider("daily_kline", modes=("diagnostic",)))
     registry.register(SinaDailyKlineProvider())
@@ -106,14 +101,11 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
     registry.register(BaiduDailyKlineProvider())
     registry.register(AdataDailyKlineProvider())
     registry.register(BaostockDailyKlineProvider())
-    registry.register(EastmoneyDailyKlineProvider())
     registry.register(StaleCacheProvider("daily_kline", modes=("live",)))
 
     # fund_flow: unavailable is explicit final source, not an exception.
     registry.register(ExactSnapshotProvider("fund_flow", modes=("snapshot",)))
     registry.register(ThsFundFlowProvider())
-    registry.register(EastmoneyFundFlowProvider())
     registry.register(AdataFundFlowProvider())
-    registry.register(TushareMoneyFlowProvider())
     registry.register(UnavailableProvider("fund_flow"))
     return registry

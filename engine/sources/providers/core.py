@@ -57,30 +57,10 @@ def _market_prefix(code: str) -> str:
     return f"sz{code}"
 
 
-def _eastmoney_market_id(code: str) -> int:
-    code = str(code).strip().zfill(6)
-    return 1 if code.startswith(("6", "9")) else 0
-
-
 def _urlopen_text(url: str, *, timeout: float = 10.0, headers: dict[str, str] | None = None) -> str:
     req = urllib.request.Request(url, headers=headers or {"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read().decode("utf-8", errors="replace")
-
-
-def _http_json(url: str, params: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
-    query = urllib.parse.urlencode(params)
-    full_url = f"{url}?{query}"
-    text = _urlopen_text(
-        full_url,
-        timeout=timeout,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://quote.eastmoney.com/",
-            "Origin": "https://quote.eastmoney.com",
-        },
-    )
-    return json.loads(text)
 
 
 def _codes_from_local_snapshot(date: str | None = None) -> list[str]:
@@ -409,39 +389,6 @@ class BaiduSpotProvider(SourceProvider):
         )
 
 
-class EfinanceSpotProvider(SourceProvider):
-    name = "efinance_all_spot"
-    kind = "all_spot"
-    modes = ("live", "diagnostic")
-
-    def fetch(self, context: SourceContext) -> SourceResult:
-        t0 = time.monotonic()
-        try:
-            import efinance as ef  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning=f"import_failed:{exc}", data_mode=context.mode)
-        try:
-            df = ef.stock.get_realtime_quotes()
-        except Exception as exc:  # noqa: BLE001
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, error=str(exc), data_mode=context.mode)
-        if df is None or df.empty:
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
-        df = df.rename(columns={
-            "股票代码": "代码",
-            "股票名称": "名称",
-            "最新价": "最新价",
-            "涨跌幅": "涨跌幅",
-            "成交量": "成交量",
-            "成交额": "成交额",
-            "换手率": "换手率",
-            "市盈率-动态": "市盈率-动态",
-            "市净率": "市净率",
-            "总市值": "总市值",
-            "流通市值": "流通市值",
-        })
-        return _quality(df, source=self.name, kind=self.kind, t0=t0, ctx=context)
-
-
 class AdataSpotProvider(SourceProvider):
     name = "adata_all_spot"
     kind = "all_spot"
@@ -618,54 +565,6 @@ class BaostockDailyKlineProvider(SourceProvider):
                     pass
 
 
-class EastmoneyDailyKlineProvider(SourceProvider):
-    name = "eastmoney_push2his_daily"
-    kind = "daily_kline"
-    modes = ("live", "diagnostic")
-
-    def fetch(self, context: SourceContext) -> SourceResult:
-        t0 = time.monotonic()
-        symbol = str(context.symbol or "").zfill(6)
-        if not symbol:
-            return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="symbol_missing", data_mode=context.mode)
-        fqt = {"qfq": "1", "hfq": "2", "": "0", None: "0"}.get(context.adjust, "1")
-        params = {
-            "secid": f"{_eastmoney_market_id(symbol)}.{symbol}",
-            "klt": "101",
-            "fqt": fqt,
-            "lmt": str(max(1, int(context.days or 60))),
-            "fields1": "f1,f2,f3,f4,f5,f6",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-        }
-        try:
-            data = _http_json("https://push2his.eastmoney.com/api/qt/stock/kline/get", params, timeout=10.0)
-        except Exception as exc:  # noqa: BLE001
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, error=str(exc), data_mode=context.mode)
-        klines = ((data.get("data") or {}).get("klines") or [])
-        rows: list[dict[str, Any]] = []
-        for line in klines:
-            parts = str(line).split(",")
-            if len(parts) < 11:
-                continue
-            rows.append({
-                "日期": parts[0],
-                "股票代码": symbol,
-                "开盘": _as_float(parts[1]),
-                "收盘": _as_float(parts[2]),
-                "最高": _as_float(parts[3]),
-                "最低": _as_float(parts[4]),
-                "成交量": _as_float(parts[5]),
-                "成交额": _as_float(parts[6]),
-                "振幅": _as_float(parts[7]),
-                "涨跌幅": _as_float(parts[8]),
-                "涨跌额": _as_float(parts[9]),
-                "换手率": _as_float(parts[10]),
-            })
-        if not rows:
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
-        return _quality(pd.DataFrame(rows), source=self.name, kind=self.kind, t0=t0, ctx=context)
-
-
 class BaiduDailyKlineProvider(SourceProvider):
     name = "baidu_gushitong_daily"
     kind = "daily_kline"
@@ -778,46 +677,6 @@ class ThsFundFlowProvider(SourceProvider):
         return _quality(df, source=self.name, kind=self.kind, t0=t0, ctx=context)
 
 
-class EastmoneyFundFlowProvider(SourceProvider):
-    name = "eastmoney_fflow"
-    kind = "fund_flow"
-    modes = ("live", "diagnostic")
-
-    def fetch(self, context: SourceContext) -> SourceResult:
-        t0 = time.monotonic()
-        symbol = str(context.symbol or "").zfill(6) if context.symbol else ""
-        if not symbol:
-            return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="symbol_required_for_daykline", data_mode=context.mode)
-        params = {
-            "secid": f"{_eastmoney_market_id(symbol)}.{symbol}",
-            "fields1": "f1,f2,f3,f7",
-            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65",
-            "lmt": str(max(1, int(context.days or 60))),
-        }
-        try:
-            data = _http_json("https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get", params, timeout=10.0)
-        except Exception as exc:  # noqa: BLE001
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, error=str(exc), data_mode=context.mode)
-        klines = ((data.get("data") or {}).get("klines") or [])
-        rows: list[dict[str, Any]] = []
-        for line in klines:
-            parts = str(line).split(",")
-            if len(parts) < 6:
-                continue
-            rows.append({
-                "日期": parts[0],
-                "股票代码": symbol,
-                "主力净流入-净额": _as_float(parts[1]),
-                "小单净流入-净额": _as_float(parts[2]),
-                "中单净流入-净额": _as_float(parts[3]),
-                "大单净流入-净额": _as_float(parts[4]),
-                "超大单净流入-净额": _as_float(parts[5]),
-            })
-        if not rows:
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
-        return _quality(pd.DataFrame(rows), source=self.name, kind=self.kind, t0=t0, ctx=context)
-
-
 class AdataFundFlowProvider(SourceProvider):
     name = "adata_fund_flow"
     kind = "fund_flow"
@@ -834,53 +693,6 @@ class AdataFundFlowProvider(SourceProvider):
         else:
             df = adata_source.concept_fund_flow()
         return _quality(df, source=self.name, kind=self.kind, t0=t0, ctx=context)
-
-
-class TushareMoneyFlowProvider(SourceProvider):
-    name = "tushare_moneyflow"
-    kind = "fund_flow"
-    modes = ("live", "diagnostic")
-
-    def fetch(self, context: SourceContext) -> SourceResult:
-        t0 = time.monotonic()
-        token = os.environ.get("TUSHARE_TOKEN") or os.environ.get("PANGU_TUSHARE_TOKEN")
-        if not token:
-            return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="token_missing", data_mode=context.mode)
-        symbol = str(context.symbol or "").zfill(6) if context.symbol else ""
-        if not symbol:
-            return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="symbol_required", data_mode=context.mode)
-        try:
-            import tushare as ts  # type: ignore
-        except Exception as exc:  # noqa: BLE001
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning=f"import_failed:{exc}", data_mode=context.mode)
-        suffix = "SH" if symbol.startswith(("6", "9")) else "SZ"
-        ts_code = f"{symbol}.{suffix}"
-        end_dt = datetime.strptime(context.effective_date, "%Y%m%d") if context.effective_date else datetime.now()
-        start_dt = end_dt - timedelta(days=max(1, int(context.days or 60)) * 2)
-        try:
-            pro = ts.pro_api(token)
-            df = pro.moneyflow(
-                ts_code=ts_code,
-                start_date=start_dt.strftime("%Y%m%d"),
-                end_date=end_dt.strftime("%Y%m%d"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, error=str(exc), data_mode=context.mode)
-        if df is None or df.empty:
-            return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="empty", data_mode=context.mode)
-        out = df.rename(columns={
-            "trade_date": "日期",
-            "ts_code": "股票代码",
-            "net_mf_amount": "主力净流入-净额",
-            "buy_lg_amount": "大单买入额",
-            "sell_lg_amount": "大单卖出额",
-            "buy_elg_amount": "超大单买入额",
-            "sell_elg_amount": "超大单卖出额",
-        }).copy()
-        out["股票代码"] = symbol
-        if "主力净流入-净额" in out.columns:
-            out["主力净流入-净额"] = pd.to_numeric(out["主力净流入-净额"], errors="coerce") * 10000
-        return _quality(out, source=self.name, kind=self.kind, t0=t0, ctx=context)
 
 
 class UnavailableProvider(SourceProvider):

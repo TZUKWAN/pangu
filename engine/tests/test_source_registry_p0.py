@@ -107,7 +107,6 @@ def test_fund_flow_unavailable_is_explicit_not_exception(monkeypatch, loader_env
 
     monkeypatch.setattr(provider_core.ThsFundFlowProvider, "fetch", fail)
     monkeypatch.setattr(provider_core.AdataFundFlowProvider, "fetch", fail)
-    monkeypatch.setattr(provider_core.TushareMoneyFlowProvider, "fetch", fail)
 
     dl = MultiSourceDataLoader(**loader_env)
     df = dl.all_fund_flow_snapshot()

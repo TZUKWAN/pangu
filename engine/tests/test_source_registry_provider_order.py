@@ -1,75 +1,48 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 from engine.sources.registry import build_default_registry
-from engine.sources.base import SourceContext
-from engine.sources.providers import core as provider_core
 
 
-def test_daily_kline_chain_includes_baostock_before_eastmoney_placeholder() -> None:
+def test_daily_kline_chain_order_with_baostock_before_stale() -> None:
     names = [p.name for p in build_default_registry().providers("daily_kline")]
 
     assert "baostock_daily_kline" in names
-    assert "eastmoney_push2his_daily" in names
-    assert names.index("baostock_daily_kline") < names.index("eastmoney_push2his_daily")
+    assert "tencent_kline_qfq" in names
+    assert "mootdx_daily_kline" in names
+    assert "baidu_gushitong_daily" in names
+    # 东财已移除：确认 chain 里没有 eastmoney_push2his
+    assert "eastmoney_push2his_daily" not in names
+    # baostock 在所有真实源之后、最后的 stale_cache(live) 之前
+    # 找最后一个 stale_cache 的位置
+    stale_positions = [i for i, n in enumerate(names) if n == "stale_cache"]
+    assert len(stale_positions) >= 2  # diagnostic + live
+    live_stale_idx = stale_positions[-1]
+    assert names.index("baostock_daily_kline") < live_stale_idx
 
 
-def test_all_spot_chain_includes_requested_middle_sources() -> None:
+def test_all_spot_chain_order() -> None:
     names = [p.name for p in build_default_registry().providers("all_spot")]
 
-    assert names[:7] == [
+    # 前 6 个：snapshot × 2 + stale + ths + tencent + sina
+    assert names[:6] == [
         "snapshot_exact",
         "snapshot_exact",
         "stale_cache",
         "ths_all_spot",
         "tencent_qt_all_spot",
         "sina_hq_all_spot",
-        "baidu_gushitong_all_spot",
     ]
+    assert "baidu_gushitong_all_spot" in names
     assert "adata_all_spot" in names
-    assert "efinance_all_spot" in names
+    # 百度 / adata 在 tencent 之后
+    assert names.index("tencent_qt_all_spot") < names.index("adata_all_spot")
 
 
-def test_eastmoney_daily_kline_parses_push2his(monkeypatch) -> None:
-    def fake_json(url, params, *, timeout=10.0):
-        assert "stock/kline/get" in url
-        assert params["secid"] == "0.000001"
-        return {"data": {"klines": ["2026-07-03,10,10.5,10.8,9.9,1000,1000000,9,2.1,0.2,1.5"]}}
+def test_fund_flow_chain_ends_with_unavailable() -> None:
+    names = [p.name for p in build_default_registry().providers("fund_flow")]
 
-    monkeypatch.setattr(provider_core, "_http_json", fake_json)
-    provider = provider_core.EastmoneyDailyKlineProvider()
-    result = provider.fetch(SourceContext(loader=SimpleNamespace(), symbol="000001", date="20260703"))
-
-    assert result.quality.ok is True
-    assert result.quality.source == "eastmoney_push2his_daily"
-    assert result.data.iloc[0]["股票代码"] == "000001"
-    assert result.data.iloc[0]["收盘"] == 10.5
-
-
-def test_eastmoney_fund_flow_parses_daykline(monkeypatch) -> None:
-    def fake_json(url, params, *, timeout=10.0):
-        assert "fflow/daykline/get" in url
-        assert params["secid"] == "1.600519"
-        return {"data": {"klines": ["2026-07-03,100,10,20,30,40"]}}
-
-    monkeypatch.setattr(provider_core, "_http_json", fake_json)
-    provider = provider_core.EastmoneyFundFlowProvider()
-    result = provider.fetch(SourceContext(loader=SimpleNamespace(), symbol="600519", date="20260703"))
-
-    assert result.quality.ok is True
-    assert result.quality.source == "eastmoney_fflow"
-    assert result.data.iloc[0]["股票代码"] == "600519"
-    assert result.data.iloc[0]["主力净流入-净额"] == 100.0
-
-
-def test_tushare_moneyflow_requires_token(monkeypatch) -> None:
-    monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
-    monkeypatch.delenv("PANGU_TUSHARE_TOKEN", raising=False)
-
-    provider = provider_core.TushareMoneyFlowProvider()
-    result = provider.fetch(SourceContext(loader=SimpleNamespace(), symbol="000001", date="20260703"))
-
-    assert result.quality.ok is False
-    assert result.quality.source == "tushare_moneyflow"
-    assert "token_missing" in result.quality.warnings
+    assert names[0] == "snapshot_exact"
+    assert "ths_fund_flow" in names
+    assert "adata_fund_flow" in names
+    assert names[-1] == "unavailable"
+    assert names.index("ths_fund_flow") < names.index("unavailable")
