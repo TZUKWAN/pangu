@@ -65,11 +65,15 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
         AdataFundFlowProvider,
         AdataSpotProvider,
         BaostockDailyKlineProvider,
+        BaiduSpotProvider,
+        EastmoneyDailyKlineProvider,
         EastmoneyFundFlowProvider,
+        EfinanceSpotProvider,
         ExactSnapshotProvider,
         LocalSnapshotProvider,
         MootdxDailyKlineProvider,
         SinaDailyKlineProvider,
+        SinaSpotProvider,
         StaleCacheProvider,
         TencentDailyKlineProvider,
         TencentSpotProvider,
@@ -86,7 +90,10 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
     registry.register(StaleCacheProvider("all_spot", modes=("diagnostic",)))
     registry.register(ThsSpotProvider())
     registry.register(TencentSpotProvider())
+    registry.register(SinaSpotProvider())
+    registry.register(BaiduSpotProvider())
     registry.register(AdataSpotProvider())
+    registry.register(EfinanceSpotProvider())
     registry.register(LocalSnapshotProvider("all_spot", modes=("live",)))
 
     # daily_kline: strict snapshot/cache in snapshot mode; stale only diagnostic/live tail fallback.
@@ -96,14 +103,14 @@ def build_default_registry(loader: Any | None = None) -> SourceRegistry:
     registry.register(TencentDailyKlineProvider())
     registry.register(AdataDailyKlineProvider())
     registry.register(BaostockDailyKlineProvider())
-    registry.register(EastmoneyFundFlowProvider(kind="daily_kline"))
+    registry.register(EastmoneyDailyKlineProvider())
     registry.register(MootdxDailyKlineProvider())
     registry.register(StaleCacheProvider("daily_kline", modes=("live",)))
 
     # fund_flow: unavailable is explicit final source, not an exception.
     registry.register(ExactSnapshotProvider("fund_flow", modes=("snapshot",)))
     registry.register(ThsFundFlowProvider())
-    registry.register(EastmoneyFundFlowProvider(kind="fund_flow"))
+    registry.register(EastmoneyFundFlowProvider())
     registry.register(AdataFundFlowProvider())
     registry.register(TushareMoneyFlowProvider())
     registry.register(UnavailableProvider("fund_flow"))
