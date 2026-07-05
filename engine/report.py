@@ -6,11 +6,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from .pipeline import PipelineResult
+
+logger = logging.getLogger("pangu.report")
 from .structured_format import structured_factor_lines, has_any_structured_signal
 
 
@@ -32,6 +36,19 @@ def render_markdown(result: PipelineResult) -> str:
     lines: list[str] = [
         f"# 盘古选股简报 · {result.date}",
         "",
+    ]
+
+    # 数据质量显式标注
+    if result.data_quality in ("failed", "degraded"):
+        lines += [
+            "> 🚨 **数据降级诊断报告**：不作为正式选股依据。",
+            f"> 质量等级：`{result.data_quality}`",
+        ]
+        if result.block_reasons:
+            lines.append(f"> 阻断原因：{'；'.join(result.block_reasons)}")
+        lines.append("")
+
+    lines += [
         f"> 数据更新于 {datetime.now().strftime('%Y-%m-%d %H:%M')}  ",
         f"> ⚠️ 本简报为决策辅助，不构成投资建议，盈亏自负。",
         "",
@@ -146,16 +163,55 @@ def render_markdown(result: PipelineResult) -> str:
     else:
         lines += ["## 三、候选股池", "", "*当前扫描无候选股（情绪冰点或无符合趋势的标的）*", ""]
 
-    # 四、被剔除的
+    # 四、新闻多空证据
+    evidence = (result.news or {}).get("evidence")
+    if evidence:
+        lines += ["## 四、新闻多空证据（板块驱动）", ""]
+        top_bullish = evidence.get("top_bullish_themes") or []
+        top_bearish = evidence.get("top_bearish_themes") or []
+        risks = evidence.get("risk_events") or []
+        if top_bullish:
+            lines += ["### 利多题材", ""]
+            for t in top_bullish[:5]:
+                snippets = "；".join(t.get("bullish_snippets", [])[:2])
+                lines.append(f"- **{t['theme']}**（得分 {t.get('score', '-')}）：{snippets}")
+            lines.append("")
+        if top_bearish:
+            lines += ["### 利空题材", ""]
+            for t in top_bearish[:5]:
+                snippets = "；".join(t.get("bearish_snippets", [])[:2])
+                lines.append(f"- **{t['theme']}**（得分 {t.get('score', '-')}）：{snippets}")
+            lines.append("")
+        if risks:
+            lines += ["### 风险事件", ""]
+            for r in risks[:5]:
+                lines.append(f"- {r}")
+            lines.append("")
+        cand_evidence = evidence.get("candidate_evidence") or {}
+        if cand_evidence:
+            lines += ["### 个股新闻审计", ""]
+            for c in result.candidates:
+                code = c.get("code")
+                ev = cand_evidence.get(code)
+                if not ev:
+                    continue
+                label = ev.get("sentiment_label", "neutral")
+                lines.append(
+                    f"- **{c.get('name', code)}（{code}）** 新闻情绪 `{label}`："
+                    f"{ev.get('verdict_reason', '')}"
+                )
+            lines.append("")
+
+    # 五、被剔除的
     if result.rejected:
-        lines += ["## 四、被护栏剔除（参考）", "",
+        lines += ["## 五、被护栏剔除（参考）", "",
                   "| 代码 | 名称 | 剔除原因 |", "|------|------|---------|"]
         for r in result.rejected[:15]:
             lines.append(f"| {r['code']} | {r['name']} | {r['reason']} |")
         lines.append("")
 
-    # 五、姿态总结
-    lines += ["## 五、操作建议", "", f"{result.posture_advice}", ""]
+    # 六、姿态总结
+    lines += ["## 六、操作建议", "", f"{result.posture_advice}", ""]
     if result.warnings:
         lines += ["### 提示", ""]
         for w in result.warnings:
@@ -166,11 +222,62 @@ def render_markdown(result: PipelineResult) -> str:
     return "\n".join(lines)
 
 
-def save_report(result: PipelineResult, report_dir: str = "data/reports") -> Path:
-    """渲染并保存到 data/reports/YYYYMMDD.md，返回路径。"""
+def save_report(
+    result: PipelineResult,
+    report_dir: str = "data/reports",
+    *,
+    force_degraded: bool = False,
+) -> Path:
+    """渲染并保存报告。
+
+    - 数据质量 ok 且非 force_degraded：写入 data/reports/YYYYMMDD.{md,json}，
+      并更新 data/reports/latest_ok.json 指针。
+    - 否则：写入 data/reports/degraded/YYYYMMDD.{md,json}，不会覆盖主报告指针。
+    """
+    import math
     out_dir = Path(report_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    is_degraded = force_degraded or result.data_quality in ("failed", "degraded")
+    if is_degraded:
+        out_dir = out_dir / "degraded"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
     md = render_markdown(result)
-    path = out_dir / f"{result.date}.md"
-    path.write_text(md, encoding="utf-8")
-    return path
+    md_path = out_dir / f"{result.date}.md"
+    md_path.write_text(md, encoding="utf-8")
+
+    def _sanitize(obj: Any) -> Any:
+        if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+            return None
+        if isinstance(obj, dict):
+            return {k: _sanitize(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_sanitize(v) for v in obj]
+        return obj
+
+    json_path = out_dir / f"{result.date}.json"
+    try:
+        payload = json.dumps(_sanitize(result.to_dict()), ensure_ascii=False, indent=2)
+        json_path.write_text(payload, encoding="utf-8")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("JSON 报告保存失败: %s", e)
+
+    if not is_degraded:
+        try:
+            latest_ok = {
+                "date": result.date,
+                "json_path": str(json_path),
+                "md_path": str(md_path),
+                "generated_at": datetime.now().isoformat(),
+                "data_quality": result.data_quality,
+                "tradable": result.tradable,
+            }
+            latest_ok_path = Path(report_dir) / "latest_ok.json"
+            tmp_path = latest_ok_path.with_suffix(".tmp")
+            tmp_path.write_text(json.dumps(latest_ok, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(latest_ok_path)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("latest_ok.json 更新失败: %s", e)
+
+    return md_path

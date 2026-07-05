@@ -70,6 +70,11 @@ def _result(cands: list[dict], source_state: dict | None = None) -> SimpleNamesp
         boards=[], candidates=cands, rejected=[],
         posture_advice="精选强势股，严格止损。", warnings=[],
         source_state=source_state or {},
+        news={},
+        data_quality="ok",
+        tradable=True,
+        no_trade_reason="",
+        block_reasons=[],
     )
 
 

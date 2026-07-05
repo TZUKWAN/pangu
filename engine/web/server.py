@@ -451,12 +451,28 @@ def _report_status(data: dict[str, Any]) -> dict[str, Any]:
     now = _beijing_now()
     now_date = now.strftime("%Y%m%d")
     is_stale = bool(report_date and report_date < now_date)
-    freshness_status = "empty" if not report_date else ("historical" if is_stale else "fresh")
-    freshness_note = None
-    if is_stale:
+
+    data_quality = data.get("data_quality", "unknown")
+    tradable = bool(data.get("tradable"))
+    no_trade_reason = data.get("no_trade_reason") or None
+    block_reasons = list(data.get("block_reasons") or [])
+    final_count = len(data.get("final_recommendations") or [])
+    watch_count = len(data.get("watchlist") or [])
+    raw_candidate_count = len(data.get("candidates") or [])
+
+    if data_quality in ("failed", "degraded"):
+        freshness_status = "degraded"
+        freshness_note = f"数据降级（{data_quality}），未生成可信正式推荐"
+    elif is_stale:
+        freshness_status = "historical"
         freshness_note = f"当前展示的是 {report_date} 历史报告，不是 {now_date} 实时新扫描结果；点击刷新扫描才会运行主链路"
     elif report_date:
+        freshness_status = "fresh"
         freshness_note = f"当前报告日期为 {report_date}"
+    else:
+        freshness_status = "empty"
+        freshness_note = "暂无报告"
+
     return {
         "date": report_date or None,
         "current_date": now_date,
@@ -470,6 +486,13 @@ def _report_status(data: dict[str, Any]) -> dict[str, Any]:
         "freshness_status": freshness_status,
         "freshness_note": freshness_note,
         "status": "ok" if data and not data.get("empty") else "empty",
+        "data_quality": data_quality,
+        "tradable": tradable,
+        "no_trade_reason": no_trade_reason,
+        "block_reasons": block_reasons,
+        "final_count": final_count,
+        "watch_count": watch_count,
+        "raw_candidate_count": raw_candidate_count,
     }
 
 
@@ -891,15 +914,33 @@ def _notifier_status() -> dict[str, Any]:
 
 def _scheduler_status() -> dict[str, Any]:
     status_dir = Path("data/scheduler")
+    cfg = load_config()
+    schedule_cfg = cfg.get("schedule") or {}
+    enabled = bool(schedule_cfg.get("enabled", False))
+    schedule_time = _parse_schedule_time(cfg)
+    next_run: Optional[str] = None
+    if enabled and schedule_time is not None:
+        next_run = _next_run_time(schedule_time).isoformat()
+
+    result: dict[str, Any] = {
+        "enabled": enabled,
+        "schedule_time": schedule_time.strftime("%H:%M") if schedule_time else None,
+        "next_run": next_run,
+        "status": "not_run",
+        "status_dir": str(status_dir),
+    }
+
     if not status_dir.exists():
-        return {"status": "not_run", "status_dir": str(status_dir), "reason": "尚未发现每日调度状态目录"}
+        result["reason"] = "尚未发现每日调度状态目录"
+        return result
     files = sorted(status_dir.glob("*_status.json"), reverse=True)
     if not files:
-        return {"status": "not_run", "status_dir": str(status_dir), "reason": "尚未发现每日调度状态文件"}
+        result["reason"] = "尚未发现每日调度状态文件"
+        return result
     latest = files[0]
     try:
         data = json.loads(latest.read_text(encoding="utf-8"))
-        return {
+        result.update({
             "status": data.get("overall_status") or "unknown",
             "date": data.get("date"),
             "run_at": data.get("run_at"),
@@ -909,9 +950,10 @@ def _scheduler_status() -> dict[str, Any]:
                 {"name": s.get("name"), "status": s.get("status"), "error": s.get("error")}
                 for s in (data.get("steps") or [])
             ],
-        }
+        })
     except Exception as e:  # noqa: BLE001
-        return {"status": "unavailable", "latest_status_file": str(latest), "reason": f"调度状态读取失败: {e}"}
+        result.update({"status": "unavailable", "latest_status_file": str(latest), "reason": f"调度状态读取失败: {e}"})
+    return result
 
 
 def _daily_loop(data: dict[str, Any], runtime: dict[str, Any], source: dict[str, Any]) -> dict[str, Any]:
@@ -994,6 +1036,14 @@ def _enrich_response(data: dict[str, Any]) -> dict[str, Any]:
             warnings.append(f"玄武池补算失败: {e}")
             enriched["warnings"] = warnings
     enriched["report_status"] = _report_status(enriched)
+    # 顶层暴露关键交易状态字段，方便前端直接取用
+    enriched["data_quality"] = enriched.get("data_quality") or enriched["report_status"].get("data_quality", "unknown")
+    enriched["tradable"] = bool(enriched.get("tradable"))
+    enriched["no_trade_reason"] = enriched.get("no_trade_reason") or enriched["report_status"].get("no_trade_reason")
+    enriched["block_reasons"] = list(enriched.get("block_reasons") or enriched["report_status"].get("block_reasons") or [])
+    enriched["final_count"] = len(enriched.get("final_recommendations") or [])
+    enriched["watch_count"] = len(enriched.get("watchlist") or [])
+    enriched["raw_candidate_count"] = len(enriched.get("candidates") or [])
     enriched["daily_loop"] = _daily_loop(enriched, runtime, enriched["source_status"])
     enriched["sentiment_report"] = _sentiment_report(enriched)
     enriched["latest_report_date"] = enriched["report_status"].get("latest_report_date")
@@ -1962,18 +2012,39 @@ def _report_sort_key(p: Path) -> tuple:
 
 
 def _list_report_paths() -> list[Path]:
-    """列出 data/reports 下所有 json 报告：按日期+修改时间倒序，``_p0`` 仅作 tiebreaker。"""
+    """列出 data/reports 下所有 json 报告：按日期+修改时间倒序，``_p0`` 仅作 tiebreaker。
+
+    注意：不进入 ``degraded/`` 子目录，也不把 ``latest_ok.json`` 当普通报告。
+    """
     if not _REPORT_DIR.exists():
         return []
-    return sorted(_REPORT_DIR.glob("*.json"), key=_report_sort_key, reverse=True)
+    return sorted(
+        (p for p in _REPORT_DIR.glob("*.json") if p.stem != "latest_ok"),
+        key=_report_sort_key,
+        reverse=True,
+    )
 
 
 def _find_latest_report() -> Optional[dict[str, Any]]:
-    """加载最新且完整的报告；按日期+mtime 倒序遍历，跳过不完整文件。
+    """加载最新且完整的报告。
 
-    旧/外部手写的不完整 ``_p0.json`` 会被 :func:`_report_is_complete` 拦下，
-    不会劫持更新的正式 ``{date}.json``。
+    优先读取 ``latest_ok.json`` 指针；若指针失效，再回退到主目录扫描。
+    旧/外部手写的不完整 ``_p0.json`` 会被 :func:`_report_is_complete` 拦下。
     """
+    latest_ok_path = _REPORT_DIR / "latest_ok.json"
+    if latest_ok_path.exists():
+        try:
+            ptr = json.loads(latest_ok_path.read_text(encoding="utf-8"))
+            json_path = Path(ptr.get("json_path") or "")
+            if not json_path.is_absolute():
+                json_path = _REPORT_DIR / json_path.name
+            if json_path.exists():
+                data = json.loads(json_path.read_text(encoding="utf-8"))
+                if _report_is_complete(data):
+                    return data
+        except Exception:  # noqa: BLE001
+            pass
+
     for p in _list_report_paths():
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
