@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 import time
 import traceback
@@ -75,6 +76,11 @@ class DailyScheduler:
         self.results: list[StepResult] = []
         self.pipeline_result: dict[str, Any] | None = None
         self.report_path: Path | None = None
+        # 跳过 RPS/快照意味着不是完整盘后链路，只能生成降级诊断报告
+        self.force_degraded = bool(skip_rps or skip_snapshot)
+        if self.force_degraded:
+            logger.warning("[scheduler] 跳过 RPS 或 快照，强制降级模式，报告将写入 degraded/")
+        self.snapshot_built = False
 
     def _run_step(self, name: str, fn: Callable[[], Any], skip: bool = False) -> StepResult:
         """执行单个步骤并计时。"""
@@ -113,14 +119,33 @@ class DailyScheduler:
         snapshot_dir = self.cfg.get("data", {}).get("snapshot_dir", "data/snapshots")
         builder = SnapshotBuilder(dl, snapshot_dir=snapshot_dir)
         result = builder.build(self.date)
+        self.snapshot_built = bool(result.paths)
         return result.to_dict()
 
     def _step_scan(self) -> dict[str, Any]:
-        pipe = self._build_pipeline()
-        result = pipe.run(self.date)
-        data = json.loads(result.to_json())
-        self.pipeline_result = data
-        return {"date": result.date, "candidates": len(result.candidates), "warnings": result.warnings}
+        # 完整盘后链路且快照已生成时，scan 阶段进入严格 snapshot 模式，
+        # 避免盘后数据源降级导致实时接口反复重试。
+        prev_mode = os.environ.get("PANGU_DATA_MODE")
+        prev_date = os.environ.get("PANGU_DATA_DATE")
+        if self.snapshot_built and not self.force_degraded:
+            os.environ["PANGU_DATA_MODE"] = "snapshot"
+            os.environ["PANGU_DATA_DATE"] = self.date
+            logger.info("[scheduler] scan 进入 snapshot 模式，日期 %s", self.date)
+        try:
+            pipe = self._build_pipeline()
+            result = pipe.run(self.date)
+            data = json.loads(result.to_json())
+            self.pipeline_result = data
+            return {"date": result.date, "candidates": len(result.candidates), "warnings": result.warnings}
+        finally:
+            if prev_mode is None:
+                os.environ.pop("PANGU_DATA_MODE", None)
+            else:
+                os.environ["PANGU_DATA_MODE"] = prev_mode
+            if prev_date is None:
+                os.environ.pop("PANGU_DATA_DATE", None)
+            else:
+                os.environ["PANGU_DATA_DATE"] = prev_date
 
     def _step_report(self) -> dict[str, Any]:
         if self.dry_run:
@@ -144,14 +169,19 @@ class DailyScheduler:
             xuanwu_pool=self.pipeline_result.get("xuanwu_pool", {}),
             recommendation_allowed=self.pipeline_result.get("recommendation_allowed", False),
             historical_mode=self.pipeline_result.get("historical_mode", "live"),
+            data_quality=self.pipeline_result.get("data_quality", "unknown"),
+            tradable=self.pipeline_result.get("tradable", False),
+            no_trade_reason=self.pipeline_result.get("no_trade_reason", ""),
+            block_reasons=self.pipeline_result.get("block_reasons", []),
+            candidate_evidence=self.pipeline_result.get("candidate_evidence", {}),
         )
         result.watchlist = self.pipeline_result.get("watchlist", [])
         result.final_recommendations = self.pipeline_result.get("final_recommendations", [])
         result.strategy_signals = self.pipeline_result.get("strategy_signals", {})
         result.strategy_candidates = self.pipeline_result.get("strategy_candidates", [])
         report_dir = self.cfg.get("output", {}).get("report_dir", "data/reports")
-        self.report_path = save_report(result, report_dir)
-        return {"report_path": str(self.report_path)}
+        self.report_path = save_report(result, report_dir, force_degraded=self.force_degraded)
+        return {"report_path": str(self.report_path), "degraded": self.force_degraded or result.data_quality != "ok"}
 
     def _step_notify(self) -> dict[str, Any]:
         from .notifier import Notifier
@@ -233,11 +263,27 @@ class DailyScheduler:
 
         overall_dur = time.time() - overall_start
         failed = [r for r in self.results if r.status == "failed"]
+
+        data_quality = "unknown"
+        tradable = False
+        if self.pipeline_result:
+            data_quality = self.pipeline_result.get("data_quality", "unknown")
+            tradable = bool(self.pipeline_result.get("tradable", False))
+
+        if failed:
+            overall_status = "failed"
+        elif self.force_degraded or data_quality == "degraded":
+            overall_status = "degraded"
+        elif data_quality == "failed":
+            overall_status = "failed"
+        else:
+            overall_status = "ok"
+
         summary = {
             "date": self.date,
             "run_at": datetime.now().isoformat(),
             "dry_run": self.dry_run,
-            "overall_status": "failed" if failed else "ok",
+            "overall_status": overall_status,
             "overall_duration_seconds": round(overall_dur, 2),
             "steps": [
                 {
@@ -250,6 +296,9 @@ class DailyScheduler:
             ],
             "report_path": str(self.report_path) if self.report_path else None,
             "candidate_count": len(self.pipeline_result.get("candidates", [])) if self.pipeline_result else 0,
+            "data_quality": data_quality,
+            "tradable": tradable,
+            "force_degraded": self.force_degraded,
         }
         self._save_status(summary)
         return summary
@@ -282,8 +331,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="pangu-daily", description="盘古每日盘后调度")
     parser.add_argument("-c", "--config", default=None, help="配置文件路径")
     parser.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
-    parser.add_argument("--skip-rps", action="store_true", help="跳过 RPS 预计算")
-    parser.add_argument("--skip-snapshot", action="store_true", help="跳过收盘快照")
+    parser.add_argument("--skip-rps", action="store_true", help="跳过 RPS 预计算（生成降级诊断报告，不覆盖 /api/latest）")
+    parser.add_argument("--skip-snapshot", action="store_true", help="跳过收盘快照（生成降级诊断报告，不覆盖 /api/latest）")
     parser.add_argument("--skip-notify", action="store_true", help="跳过通知")
     parser.add_argument("--dry-run", action="store_true", help="只检查配置与通知，不执行耗时取数")
     parser.add_argument("--workers", type=int, default=10, help="RPS 预计算并发数")
@@ -303,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     summary = scheduler.run()
     print(json.dumps(summary, ensure_ascii=False, indent=2))
+    if summary.get("overall_status") == "degraded":
+        print("\n已生成降级诊断报告，不会覆盖 /api/latest")
+        return 0
     return 0 if summary["overall_status"] == "ok" else 1
 
 

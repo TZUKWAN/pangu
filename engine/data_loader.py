@@ -1,4 +1,4 @@
-"""数据层：akshare 取数封装。
+﻿"""数据层：akshare 取数封装。
 
 设计原则：
 1. 所有 akshare 调用都带重试 + 异常隔离（akshare 网络脆弱，单点失败不应炸整个 pipeline）。
@@ -922,6 +922,75 @@ class MultiSourceDataLoader(DataLoader):
             self._fin_cache: dict[str, tuple[datetime, pd.DataFrame]] = {}
             self._memory_cache: dict[str, tuple[datetime, Any]] = {}
             self._memory_cache_ttl = timedelta(minutes=60)
+            self._ths_fund_flow_broken = False
+        self._data_mode = os.environ.get("PANGU_DATA_MODE", "live")
+        self._data_date = os.environ.get("PANGU_DATA_DATE")
+        self.source_quality: dict[str, dict[str, Any]] = {}
+        from .sources import build_default_registry
+
+        self.source_registry = build_default_registry(self)
+
+    # ------------------------------------------------------------------ #
+    def _source_context(
+        self,
+        kind: str,
+        *,
+        symbol: str | None = None,
+        days: int = 60,
+        adjust: str = "qfq",
+        date: Optional[str] = None,
+        cache_key: str | None = None,
+    ):
+        from .sources import SourceContext
+
+        return SourceContext(
+            loader=self,
+            mode=self._data_mode,
+            data_date=self._data_date,
+            symbol=symbol,
+            days=days,
+            adjust=adjust,
+            date=date,
+            cache_key=cache_key,
+            snapshot_dir=self.snapshot_dir,
+        )
+
+    def _record_source_result(self, kind: str, result):
+        df = result.with_attrs()
+        self.source_quality[kind] = result.quality.to_dict()
+        self.source_quality[f"{kind}_chain"] = list(result.chain)
+        return df
+
+    def get_source_quality(self, kind: str | None = None) -> dict[str, Any]:
+        if kind:
+            return self.source_quality.get(kind, {})
+        return dict(self.source_quality)
+
+    def _snapshot_date_dir(self) -> Optional[Path]:
+        date_str = self._data_date
+        if not date_str:
+            return None
+        try:
+            d = datetime.strptime(date_str, "%Y%m%d")
+        except ValueError:
+            try:
+                d = datetime.strptime(date_str, "%Y-%m-%d")
+            except ValueError:
+                return None
+        return self.snapshot_dir / d.strftime("%Y-%m-%d")
+
+    def _load_snapshot_exact(self, name: str) -> Optional[pd.DataFrame]:
+        day_dir = self._snapshot_date_dir()
+        if day_dir is None:
+            return None
+        path = day_dir / f"{name}.parquet"
+        if not path.exists():
+            return None
+        try:
+            return pd.read_parquet(path)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("读取快照 %s 失败: %s", path, e)
+            return None
 
     # ------------------------------------------------------------------ #
     def all_spot(self) -> pd.DataFrame:
@@ -930,6 +999,15 @@ class MultiSourceDataLoader(DataLoader):
         优先级：同花顺全市场(不封IP,5186只) → 腾讯批量(含PE/PB) → adata → 本地快照 → 过期缓存。
         主源同花顺 stock_fund_flow_individual，13秒出全市场，自带资金流，最稳。
         """
+        result = self.source_registry.fetch(
+            "all_spot",
+            self._source_context("all_spot", cache_key="all_spot"),
+        )
+        df = self._record_source_result("all_spot", result)
+        if len(df) > 0:
+            self._mem_put("all_spot", df)
+        return df.copy()
+
         # 0. 进程内内存缓存
         mem = self._mem_get("all_spot")
         if mem is not None and len(mem) > 0:
@@ -986,6 +1064,23 @@ class MultiSourceDataLoader(DataLoader):
         logger.error("all_spot 全部数据源不可用，返回空 DataFrame")
         return pd.DataFrame()
 
+    def all_fund_flow_snapshot(self, fast: bool = False) -> pd.DataFrame:
+        """全市场资金流：返回显式 source_quality，不因不可用抛异常。"""
+        result = self.source_registry.fetch(
+            "fund_flow",
+            self._source_context("fund_flow", cache_key="fund_flow:all_spot"),
+        )
+        return self._record_source_result("fund_flow", result).copy()
+
+    def individual_fund_flow(self, symbol: str, fast: bool = False) -> pd.DataFrame:
+        """个股资金流：不可用时返回空表并记录 source_quality。"""
+        symbol = str(symbol).zfill(6)
+        result = self.source_registry.fetch(
+            "fund_flow",
+            self._source_context("fund_flow", symbol=symbol, cache_key=f"fund_flow:{symbol}"),
+        )
+        return self._record_source_result(f"fund_flow:{symbol}", result).copy()
+
     def daily_kline(
         self,
         symbol: str,
@@ -998,6 +1093,29 @@ class MultiSourceDataLoader(DataLoader):
         优先级：akshare → mootdx(不封IP,不复权) → adata → 过期缓存。
         ⚠️ mootdx 返回不复权价，跨除权日精确盈亏需注意；趋势/均线/突破判断不受影响。
         """
+        end_dt = datetime.strptime(date, "%Y%m%d") if date else datetime.now()
+        start = (end_dt - timedelta(days=days * 2)).strftime("%Y%m%d")
+        end = end_dt.strftime("%Y%m%d")
+        cache_key = f"kline:{symbol}:{adjust}:{start}:{end}"
+
+        symbol_norm = str(symbol).zfill(6)
+        result = self.source_registry.fetch(
+            "daily_kline",
+            self._source_context(
+                "daily_kline",
+                symbol=symbol_norm,
+                days=days,
+                adjust=adjust,
+                date=date,
+                cache_key=cache_key,
+            ),
+        )
+        df = self._record_source_result(f"daily_kline:{symbol_norm}", result)
+        if len(df) > 0:
+            self._mem_put(cache_key, df)
+            self._cache_put(cache_key, df)
+        return df.copy()
+
         try:
             df = super().daily_kline(symbol, days=days, adjust=adjust, date=date)
             if len(df) > 0:

@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from .data_loader import DataLoader
+from .data_loader import DataLoader, safe_float
 from .entry_exit import EntryExitEngine
 from .quant_guard import GuardResult
 from .strategy_pools import StrategySignal
@@ -107,11 +107,10 @@ class RecommendationGate:
                 strategy_name, sig = signal_pair
                 item = self._build_item(sig, cand)
                 if cand_dict:
-                    item.setdefault("entry_exit", cand_dict.get("entry_exit"))
-                    item.setdefault("technical", cand_dict.get("technical"))
-                    item.setdefault("debate", cand_dict.get("debate"))
-                    item.setdefault("xuanwu", cand_dict.get("xuanwu"))
-                    item.setdefault("recommend", cand_dict.get("recommend"))
+                    for k in ("entry_exit", "technical", "debate", "xuanwu", "recommend",
+                              "anti_chase", "entry_plan", "entry_style", "news_evidence",
+                              "volume_audit"):
+                        item.setdefault(k, cand_dict.get(k))
                 self._judge_strategy_signal(code, strategy_name, sig, cand, item, result, watch_codes, rejected_codes, llm_review_map)
             else:
                 # 旧 trend 扫描补充候选：无策略信号，只过 guard，不进入正式推荐
@@ -165,16 +164,36 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "rps_real", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 4. 资金流确认（available / ok 均视为可解释）
+        # 4. 资金流确认：不可用不直接阻断，除非策略强依赖资金流。
         valid_fund_status = {"available", "ok"}
-        if cand and cand.fund_flow_status not in valid_fund_status and not is_watch:
+        if cand and cand.fund_flow_status not in valid_fund_status and self._strategy_requires_fund_flow(strategy_name) and not is_watch:
             item["gate_status"] = "watch"
-            item["watch_reason"] = f"资金流状态 {cand.fund_flow_status}"
+            item["watch_reason"] = f"策略强依赖资金流，但资金流状态 {cand.fund_flow_status}"
             result.watchlist.append(item)
             result.gate_log.append({"code": code, "gate": "fund_flow", "passed": False, "reason": item["watch_reason"]})
             return
+        if cand and cand.fund_flow_status not in valid_fund_status:
+            item["fund_flow_risk"] = f"资金流状态 {cand.fund_flow_status}，仅作中性偏弱证据"
 
-        # 5. EntryExit 可执行（优先使用 Pipeline 已计算的买卖点）
+        # 5. 量能审计：缺失/异常/无量突破不能进入 final
+        va = item.get("volume_audit") or {}
+        if va:
+            va_status = va.get("status")
+            pattern = va.get("price_volume_pattern")
+            if va_status in {"missing", "abnormal"}:
+                item["gate_status"] = "watch"
+                item["watch_reason"] = f"量能审计不足：{va.get('reason', va_status)}"
+                result.watchlist.append(item)
+                result.gate_log.append({"code": code, "gate": "volume_audit", "passed": False, "reason": item["watch_reason"]})
+                return
+            if pattern in {"breakout_without_volume", "distribution_volume", "weak_rebound_no_volume", "panic_volume"}:
+                item["gate_status"] = "watch"
+                item["watch_reason"] = f"量价形态不支持正式推荐：{va.get('reason', pattern)}"
+                result.watchlist.append(item)
+                result.gate_log.append({"code": code, "gate": "volume_audit", "passed": False, "reason": item["watch_reason"]})
+                return
+
+        # 6. EntryExit 可执行（优先使用 Pipeline 已计算的买卖点）
         if item.get("entry_exit") and item["entry_exit"].get("buy_points"):
             pass
         else:
@@ -193,7 +212,62 @@ class RecommendationGate:
                 result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
                 return
 
-        # 6. LLM 复核（若启用）
+        # 7. 反追涨闸门
+        ac = item.get("anti_chase") or {}
+        if ac.get("status") == "blocked":
+            item["gate_status"] = "rejected"
+            item["reject_reason"] = f"反追涨：{ac.get('reason', '')}"
+            result.rejected.append(item)
+            result.gate_log.append({"code": code, "gate": "anti_chase", "passed": False, "reason": item["reject_reason"]})
+            return
+        if ac.get("status") == "watch":
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"反追涨：{ac.get('reason', '')}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "anti_chase", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 8. 条件买点：追价型买点禁止进入 final
+        entry_plan = item.get("entry_plan") or {}
+        if entry_plan.get("is_chasing"):
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"追价型买点：{entry_plan.get('trigger_condition', '')}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
+            return
+        if item.get("entry_style") == "breakout_confirm":
+            trigger_price = safe_float(entry_plan.get("trigger_price"), 0.0)
+            current_price = safe_float(entry_plan.get("current_price"), 0.0)
+            if trigger_price > 0 and current_price > trigger_price * 1.01:
+                item["gate_status"] = "watch"
+                item["watch_reason"] = "突破确认型买点已偏离触发价 >1%，不再追价"
+                result.watchlist.append(item)
+                result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
+                return
+
+        # 9. 新闻多空证据审计
+        ev = item.get("news_evidence") or {}
+        ev_label = ev.get("sentiment_label", "")
+        if ev and ev_label == "bearish":
+            item["gate_status"] = "rejected"
+            item["reject_reason"] = f"新闻利空：{ev.get('verdict_reason', '')}"
+            result.rejected.append(item)
+            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["reject_reason"]})
+            return
+        if ev and ev_label == "mixed" and ev.get("risk_events"):
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"新闻多空交织且含风险：{ev.get('verdict_reason', '')}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
+            return
+        if ev and ev_label in ("neutral", "weak") and ev.get("support_count", 0) == 0:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"新闻证据不足：{ev.get('verdict_reason', '')}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 10. LLM 复核（若启用）
         review = llm_review_map.get(code) if llm_review_map else None
         if self.cfg.get("llm", {}).get("enable_review", False):
             if not review or not review.get("passed"):
@@ -240,6 +314,10 @@ class RecommendationGate:
             if forbidden in strategy_name or strategy_name in forbidden:
                 return False
         return True
+
+    def _strategy_requires_fund_flow(self, strategy_name: str) -> bool:
+        s = str(strategy_name or "").lower()
+        return any(token in s for token in ("fund", "flow", "资金", "主力", "北向"))
 
     def _build_item(self, sig: StrategySignal, cand: Optional[StockCandidate]) -> dict[str, Any]:
         item = sig.to_dict()

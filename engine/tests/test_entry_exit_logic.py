@@ -333,3 +333,22 @@ def test_compute_date_param_uses_historical_kline():
     res = engine.compute(candidate, temperature=70, date="20250101")
     assert res.code == "000001"
     assert res.stop_loss is not None
+
+
+def test_entry_plan_contains_style_and_invalid_condition():
+    kline = _make_kline(n=30, trend="up")
+    dl = MockDataLoader(kline)
+    engine = EntryExitEngine(dl, cfg={})
+    candidate = StockCandidate(
+        code="000001", name="测试", board="x",
+        close=float(kline["收盘"].iloc[-1]), pct_change=2.0,
+        turnover_rate=1.5, circ_mv_yi=100, rps=85, reasons=["t"],
+    )
+
+    res = engine.compute(candidate, temperature=70)
+    plan = res.to_dict()["entry_plan"]
+
+    assert plan["entry_style"] == res.entry_style
+    assert plan["trigger_condition"]
+    assert plan["invalid_condition"]
+    assert "is_chasing" in plan

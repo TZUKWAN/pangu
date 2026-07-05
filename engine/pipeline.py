@@ -45,6 +45,7 @@ from .xuanwu_pool import XuanwuPoolBuilder
 from .market_phase import MarketPhaseAnalyzer
 from .strategy_pools import run_all_pools
 from .recommendation_gate import RecommendationGate
+from .evidence_assembler import EvidenceAssembler
 
 logger = logging.getLogger("pangu.pipeline")
 
@@ -70,6 +71,12 @@ class PipelineResult:
     final_recommendations: list[dict[str, Any]] = field(default_factory=list)
     strategy_signals: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     strategy_candidates: list[dict[str, Any]] = field(default_factory=list)
+    # 数据质量与可交易性（新增）
+    data_quality: str = "ok"  # ok / degraded / failed
+    tradable: bool = False
+    no_trade_reason: str = ""
+    block_reasons: list[str] = field(default_factory=list)
+    candidate_evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -90,6 +97,14 @@ class PipelineResult:
             "final_recommendations": self.final_recommendations,
             "strategy_signals": self.strategy_signals,
             "strategy_candidates": self.strategy_candidates,
+            "data_quality": self.data_quality,
+            "tradable": self.tradable,
+            "no_trade_reason": self.no_trade_reason,
+            "block_reasons": self.block_reasons,
+            "final_count": len(self.final_recommendations),
+            "watch_count": len(self.watchlist),
+            "raw_candidate_count": len(self.candidates),
+            "candidate_evidence": self.candidate_evidence,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -203,10 +218,32 @@ class Pipeline:
         # 0. 全市场快照状态（关键源）
         try:
             spot = self.dl.all_spot()
+            spot_quality = spot.attrs.get("source_quality") if hasattr(spot, "attrs") else None
             if len(spot) > 0:
-                _update_status("all_spot", "ok", rows=len(spot))
+                if isinstance(spot_quality, dict):
+                    _update_status(
+                        "all_spot",
+                        spot_quality.get("status", "ok"),
+                        rows=len(spot),
+                        source=spot_quality.get("source"),
+                        source_quality=spot_quality,
+                        source_chain=spot.attrs.get("source_chain", []),
+                        field_quality=spot_quality.get("field_quality", {}),
+                    )
+                else:
+                    _update_status("all_spot", "ok", rows=len(spot))
             else:
-                _update_status("all_spot", "failed", "返回空数据")
+                reason = "返回空数据"
+                if isinstance(spot_quality, dict):
+                    reason = "; ".join(spot_quality.get("warnings") or spot_quality.get("errors") or [reason])
+                _update_status(
+                    "all_spot",
+                    "failed",
+                    reason,
+                    rows=0,
+                    source_quality=spot_quality or {},
+                    source_chain=spot.attrs.get("source_chain", []) if hasattr(spot, "attrs") else [],
+                )
         except Exception as e:  # noqa: BLE001
             _update_status("all_spot", "failed", str(e))
             spot = pd.DataFrame()
@@ -369,6 +406,32 @@ class Pipeline:
         else:
             _update_status("entry_exit", "degraded", reason="部分候选买卖点计算失败", computed=len(analysis_full))
 
+        def _volume_audit_stage() -> None:
+            from .volume_audit import VolumeAudit
+            auditor = VolumeAudit(self.dl, self.full_cfg)
+            auditor.audit_candidates(list(analysis_dict.values()), date=date)
+
+        self._stage("量能审计", _volume_audit_stage, timeout=120.0, default=None)
+        volume_statuses = [
+            (d.get("volume_audit") or {}).get("status")
+            for d in analysis_dict.values()
+            if d.get("volume_audit")
+        ]
+        if not volume_statuses:
+            _update_status("volume_audit", "degraded", reason="未生成量能审计", computed=0)
+        elif any(s == "missing" for s in volume_statuses):
+            _update_status("volume_audit", "degraded", reason="部分候选量能缺失", computed=len(volume_statuses))
+        else:
+            _update_status("volume_audit", "ok", computed=len(volume_statuses))
+
+        # 反追涨闸门：对所有含技术快照的候选打标，默认降级为 watch
+        def _anti_chase_stage() -> None:
+            from .anti_chase_guard import AntiChaseGuard
+            guard = AntiChaseGuard(self.dl, self.full_cfg)
+            guard.guard(list(analysis_dict.values()), date=date)
+
+        self._stage("反追涨闸门", _anti_chase_stage, timeout=120.0, default=None)
+
         # 严格候选 = deep limit；观察池 = broad + guard.watch + trend 宽松观察池
         deep_full = [analysis_dict.get(c.code, c.to_dict()) for c in deep_candidates]
         broad_full = [analysis_dict.get(c.code, c.to_dict()) for c in broad_candidates]
@@ -464,6 +527,51 @@ class Pipeline:
         else:
             news_data = {"warnings": ["新闻聚合阶段超时或失败"]}
             source_status["news"] = {"status": "degraded", "warnings": ["新闻聚合阶段超时或失败"]}
+
+        # ⑤.1 板块驱动新闻证据层：把泛财经快讯按题材/个股分类为多空证据
+        news_evidence_summary: dict[str, Any] = {}
+        candidate_evidence: dict[str, dict[str, Any]] = {}
+        if news_result is not None:
+            try:
+                from .news_evidence import NewsEvidenceCollector, NewsQueryContext
+                candidate_themes: dict[str, set[str]] = {}
+                for code, ns in (news_sentiment or {}).items():
+                    themes = ns.get("themes") or []
+                    if themes:
+                        candidate_themes[code] = set(themes)
+                strategy_sig_dict = {
+                    name: [s.to_dict() for s in sigs]
+                    for name, sigs in (pooled_signals or {}).items()
+                }
+                ctx = NewsQueryContext(
+                    date=date,
+                    hot_themes=news_result.hot_themes,
+                    boards=trend.boards,
+                    strategy_signals=strategy_sig_dict,
+                    candidates=list(analysis_dict.values()),
+                    candidate_themes=candidate_themes,
+                )
+                flashes_dict = [f.to_dict() for f in news_result.flashes]
+                stock_news_dict = {
+                    code: [n.to_dict() for n in news_list]
+                    for code, news_list in news_result.stock_news.items()
+                }
+                collector = NewsEvidenceCollector(self.full_cfg)
+                news_evidence_summary = collector.collect(ctx, flashes_dict, stock_news_dict)
+                candidate_evidence = news_evidence_summary.get("candidate_evidence") or {}
+                news_data["evidence"] = news_evidence_summary
+                for d in analysis_dict.values():
+                    code = str(d.get("code") or "")
+                    if code in candidate_evidence:
+                        d["news_evidence"] = candidate_evidence[code]
+                for c in candidates:
+                    code = str(c.get("code") or "")
+                    if code in candidate_evidence:
+                        c["news_evidence"] = candidate_evidence[code]
+                logger.info("新闻证据层完成：%d 个题材，%d 只个股", len(news_evidence_summary.get("theme_evidence", {})), len(candidate_evidence))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("新闻证据层失败: %s", e)
+                source_status.setdefault("news", {})["evidence_error"] = str(e)
 
         # ⑥ P0 结构化因子（非关键）
         def _p0_stage() -> dict[str, Any]:
@@ -698,10 +806,27 @@ class Pipeline:
             if posture == "亢奋":
                 final_advice += " 当前情绪亢奋，候选股注意追高风险，轻仓试错。"
 
+        # 汇总 SourceRegistry 在下游阶段产生的 K 线和资金流质量。
+        self._merge_loader_source_quality(source_status)
+
+        # 数据质量与可交易性判定
+        data_quality, dq_reasons = self._compute_data_quality(
+            source_status, sentiment, recommendation_allowed, ranked
+        )
+        # 当前是否已有追价买点由后续 AntiChaseGuard / RecommendationGate 处理，
+        # 这里先判断数据层面是否允许交易
+        tradable = (data_quality == "ok" and len(final_recommendations) > 0)
+        no_trade_reason = ""
+        if data_quality == "ok" and not final_recommendations:
+            no_trade_reason = "数据完整，但无低风险买点/未通过反追涨闸门"
+        elif data_quality != "ok":
+            no_trade_reason = "; ".join(dq_reasons) if dq_reasons else "数据质量不足"
+
         # 清理：把 final_recommendations 之外的严格候选也保留在 candidates 里，但报告需明确区分
         # 这里 candidates 包含 ranked（严格候选），rejected 包含被 guard 硬剔除的
-        logger.info("==== 盘古选股 %s 完成：严格候选 %d，观察池 %d，最终推荐 %d，耗时 %.1fs ====",
-                    date, len(ranked), len(watchlist), len(final_recommendations), time.monotonic() - overall_t0)
+        logger.info("==== 盘古选股 %s 完成：严格候选 %d，观察池 %d，最终推荐 %d，数据质量 %s，可交易 %s，耗时 %.1fs ====",
+                    date, len(ranked), len(watchlist), len(final_recommendations),
+                    data_quality, tradable, time.monotonic() - overall_t0)
         market_modules = self._build_market_modules(date)
         market_modules.update(market_modules_extra)
         if market_phase_dict:
@@ -712,6 +837,27 @@ class Pipeline:
             gate_watch_codes = {w["code"] for w in gate_result.watchlist}
             watchlist = [w for w in watchlist if w.get("code") not in gate_watch_codes]
             watchlist.extend(gate_result.watchlist)
+
+        strategy_signal_dict = {
+            name: [s.to_dict() for s in sigs]
+            for name, sigs in (pooled_signals or {}).items()
+        }
+        assembled_candidate_evidence = EvidenceAssembler().assemble(
+            candidates=ranked,
+            final_recommendations=final_recommendations,
+            watchlist=watchlist,
+            rejected=guarded.rejected,
+            strategy_signals=strategy_signal_dict,
+            source_status=source_status,
+            news_evidence=candidate_evidence,
+            market_phase=market_phase_dict,
+            data_quality=data_quality,
+        )
+        for bucket in (ranked, final_recommendations, watchlist, guarded.rejected):
+            for item in bucket:
+                code = str(item.get("code") or "")
+                if code in assembled_candidate_evidence:
+                    item["candidate_evidence"] = assembled_candidate_evidence[code]
 
         result = PipelineResult(
             date=date,
@@ -727,16 +873,150 @@ class Pipeline:
             xuanwu_pool=xuanwu_pool,
             recommendation_allowed=recommendation_allowed and len(final_recommendations) > 0,
             historical_mode=historical_mode,
+            data_quality=data_quality,
+            tradable=tradable,
+            no_trade_reason=no_trade_reason,
+            block_reasons=dq_reasons,
+            candidate_evidence=assembled_candidate_evidence,
         )
         # 额外挂载 watchlist / final_recommendations / 策略池原始产出 供报告使用
         result.watchlist = watchlist
         result.final_recommendations = final_recommendations
-        result.strategy_signals = {
-            name: [s.to_dict() for s in sigs]
-            for name, sigs in (pooled_signals or {}).items()
-        }
+        result.strategy_signals = strategy_signal_dict
         result.strategy_candidates = strategy_candidates
         return result
+
+    def _compute_data_quality(
+        self,
+        source_status: dict[str, Any],
+        sentiment: dict[str, Any],
+        recommendation_allowed: bool,
+        ranked: list[dict[str, Any]],
+    ) -> tuple[str, list[str]]:
+        """判定报告数据质量与阻断原因。
+
+        - failed：核心行情数据缺失/崩溃，报告基本不可信。
+        - degraded：部分关键数据缺失，但仍具观察价值，不允许作为正式推荐。
+        - ok：数据链路完整。
+        """
+        reasons: list[str] = []
+
+        # 核心源失败判定
+        core_market_failed: list[str] = []
+        for key in ("all_spot", "daily_kline"):
+            if source_status.get(key, {}).get("status") == "failed":
+                core_market_failed.append(key)
+        if core_market_failed:
+            reasons.append(f"核心行情源失败: {', '.join(core_market_failed)}")
+
+        # 核心字段大面积缺失
+        if ranked:
+            def _field_missing_pct(field: str) -> float:
+                missing = sum(1 for c in ranked if safe_float(c.get(field), None) is None)
+                return missing / len(ranked)
+            for field in ("close", "pct_change", "turnover_rate"):
+                if _field_missing_pct(field) > 0.30:
+                    reasons.append(f"核心字段 {field} 缺失率超过30%")
+                    break
+
+        # entry_exit 全局失败
+        if source_status.get("entry_exit", {}).get("status") == "failed":
+            reasons.append("买卖点计算全局失败")
+
+        if reasons:
+            return "failed", reasons
+
+        # degraded 判定
+        degraded_reasons: list[str] = []
+        if source_status.get("rps", {}).get("status") != "ok":
+            degraded_reasons.append("真实 RPS 表缺失")
+        if source_status.get("fund_flow", {}).get("status") in ("failed", "degraded"):
+            degraded_reasons.append("资金流不可用或降级")
+        if source_status.get("entry_exit", {}).get("status") == "degraded":
+            degraded_reasons.append("部分买卖点计算失败")
+        if source_status.get("quant_guard", {}).get("status") == "degraded":
+            degraded_reasons.append("量化护栏降级")
+        if source_status.get("volume_audit", {}).get("status") in ("failed", "degraded"):
+            degraded_reasons.append("量能审计缺失或降级")
+
+        # 涨停池异常：交易日但涨停数为 0（这里用 sentiment 里的涨停数近似）
+        components = sentiment.get("components") or {}
+        limit_up_count = components.get("limit_up_count", 0)
+        if limit_up_count == 0 and not recommendation_allowed:
+            degraded_reasons.append("涨停池为空或数据异常")
+
+        # PE/PB 大面积缺失（通过 source_status 中 all_spot 的原因判断）
+        all_spot_reason = str(source_status.get("all_spot", {}).get("reason") or "")
+        if "估值" in all_spot_reason or "PE" in all_spot_reason or "PB" in all_spot_reason:
+            degraded_reasons.append("估值字段大面积缺失")
+
+        if degraded_reasons:
+            return "degraded", degraded_reasons
+
+        return "ok", []
+
+    def _merge_loader_source_quality(self, source_status: dict[str, Any]) -> None:
+        """Merge SourceRegistry quality emitted by MultiSourceDataLoader."""
+        getter = getattr(self.dl, "get_source_quality", None)
+        if not callable(getter):
+            return
+        try:
+            quality_map = getter()
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(quality_map, dict):
+            return
+
+        def _status_rank(status: str) -> int:
+            return {"ok": 0, "degraded": 1, "failed": 2}.get(str(status), 1)
+
+        def _merge_one(name: str, quality: dict[str, Any]) -> None:
+            if not quality:
+                return
+            status = str(quality.get("status") or ("ok" if quality.get("ok") else "failed"))
+            existing = source_status.get(name, {})
+            if existing and _status_rank(str(existing.get("status"))) > _status_rank(status):
+                status = str(existing.get("status"))
+            source_status[name] = {
+                **existing,
+                "status": status,
+                "source": quality.get("source"),
+                "rows": quality.get("row_count", existing.get("rows", 0)),
+                "warnings": quality.get("warnings", existing.get("warnings", [])),
+                "field_quality": quality.get("field_quality", existing.get("field_quality", {})),
+                "source_quality": quality,
+                "source_chain": quality_map.get(f"{name}_chain", existing.get("source_chain", [])),
+            }
+
+        if isinstance(quality_map.get("all_spot"), dict):
+            _merge_one("all_spot", quality_map["all_spot"])
+        if isinstance(quality_map.get("fund_flow"), dict):
+            _merge_one("fund_flow", quality_map["fund_flow"])
+
+        kline_items = [
+            (key, value)
+            for key, value in quality_map.items()
+            if key.startswith("daily_kline:") and isinstance(value, dict)
+        ]
+        if kline_items:
+            statuses = [str(q.get("status") or ("ok" if q.get("ok") else "failed")) for _, q in kline_items]
+            if all(s == "failed" for s in statuses):
+                status = "failed"
+            elif any(s != "ok" for s in statuses):
+                status = "degraded"
+            else:
+                status = "ok"
+            source_status["daily_kline"] = {
+                "status": status,
+                "rows": sum(int(q.get("row_count") or 0) for _, q in kline_items),
+                "sample_count": len(kline_items),
+                "samples": {key: q for key, q in kline_items[:5]},
+                "warnings": [
+                    warning
+                    for _, q in kline_items[:20]
+                    for warning in (q.get("warnings") or [])
+                ],
+            }
 
     def _xuanwu_source_status(self, source_status: dict[str, Any]) -> dict[str, Any]:
         """Compress pipeline source_status into gate-level statuses for Xuanwu scoring."""

@@ -41,6 +41,7 @@ class BuyPoint:
     type: str          # 突破位 / 回踩位 / 支撑位
     condition: str     # 触发条件描述
     is_primary: bool = False
+    style: str = ""    # snake_case 买点类型：breakout_confirm / ma_pullback / support_dip / range_reclaim
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +49,7 @@ class BuyPoint:
             "type": self.type,
             "condition": self.condition,
             "is_primary": self.is_primary,
+            "style": self.style,
         }
 
 
@@ -113,6 +115,8 @@ class EntryExitResult:
     position: Optional[PositionPlan] = None
     risk_reward_ratio: float = 0.0
     warnings: list[str] = field(default_factory=list)
+    entry_style: str = ""        # snake_case 主买点类型
+    entry_plan: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +130,8 @@ class EntryExitResult:
             "position": self.position.to_dict() if self.position else None,
             "risk_reward_ratio": round(self.risk_reward_ratio, 2),
             "warnings": self.warnings,
+            "entry_style": self.entry_style,
+            "entry_plan": self.entry_plan,
         }
 
 
@@ -208,6 +214,20 @@ class EntryExitEngine:
         res.buy_points = buy_points
         primary = next((b for b in buy_points if b.is_primary), buy_points[0])
 
+        # 入口计划
+        res.entry_style = primary.style
+        ideal_lower = round(primary.price * 0.99, 2)
+        ideal_upper = round(primary.price * 1.01, 2)
+        res.entry_plan = {
+            "entry_style": primary.style,
+            "trigger_price": round(primary.price, 2),
+            "trigger_condition": primary.condition,
+            "ideal_entry_zone": [ideal_lower, ideal_upper],
+            "current_price": round(close, 2),
+            "is_chasing": bool(close > ideal_upper * 1.02),
+            "invalid_condition": self._entry_invalid_condition(primary),
+        }
+
         # 止损：三种方法动态选最合理的
         stop_loss = self._build_stop_loss(
             entry=primary.price,
@@ -241,6 +261,19 @@ class EntryExitEngine:
                 res.risk_reward_ratio = (target1 - primary.price) / risk
 
         return res
+
+    def _entry_invalid_condition(self, primary: BuyPoint) -> str:
+        if primary.style == "breakout_confirm":
+            return "突破失败，收盘跌回触发价下方或放量滞涨"
+        if primary.style == "ma_pullback":
+            return "有效跌破回踩均线且次日不能收回"
+        if primary.style == "support_dip":
+            return "跌破支撑位 2% 且不能快速收回"
+        if primary.style == "leader_divergence_reclaim":
+            return "分歧后无法回封/收回关键价位"
+        if primary.style == "range_reclaim":
+            return "收盘重新跌回箱体下沿"
+        return "触发条件失效或价格明显偏离计划"
 
     # ------------------------------------------------------------------ #
     def compute_batch(
@@ -295,6 +328,7 @@ class EntryExitEngine:
             price=recent_high,
             type="突破位",
             condition=f"收盘站稳前 {self.breakout_lookback} 日高点 {recent_high:.2f}",
+            style="breakout_confirm",
         ))
 
         # 回踩位：按 MA5→MA10→MA20 顺序，取低于现价且有效的均线
@@ -307,6 +341,7 @@ class EntryExitEngine:
                     price=ma,
                     type="回踩位",
                     condition=f"回踩 MA{period} 不破位（{ma:.2f}）",
+                    style="ma_pullback",
                 ))
 
         # 支撑位：近期低点，作为低吸备选
@@ -314,6 +349,7 @@ class EntryExitEngine:
             price=recent_low,
             type="支撑位",
             condition=f"回踩近 {self.support_lookback} 日低点 {recent_low:.2f} 低吸",
+            style="support_dip",
         ))
 
         # 选主买点：短线策略只把突破位作为触发确认，不作为默认追价买点。

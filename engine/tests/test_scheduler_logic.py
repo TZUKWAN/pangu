@@ -78,3 +78,68 @@ def test_scheduler_respects_no_notify_env(cfg, status_dir, monkeypatch):
     summary = scheduler.run()
     notify_step = next(s for s in summary["steps"] if s["name"] == "notify")
     assert notify_step["status"] == "ok"
+
+
+def test_skip_rps_snapshot_forces_degraded_report_and_keeps_evidence(cfg, status_dir, tmp_path, monkeypatch):
+    """skip-rps/skip-snapshot creates a degraded diagnostic report and keeps evidence."""
+    cfg = {
+        **cfg,
+        "output": {
+            **cfg["output"],
+            "report_dir": str(tmp_path / "reports"),
+        },
+    }
+    scheduler = DailyScheduler(
+        cfg,
+        date="20260101",
+        skip_rps=True,
+        skip_snapshot=True,
+        skip_notify=True,
+        dry_run=False,
+        status_dir=status_dir,
+    )
+
+    def fake_scan():
+        scheduler.pipeline_result = {
+            "date": "20260101",
+            "sentiment": {"temperature": 50, "posture": "normal", "components": {}},
+            "boards": [],
+            "candidates": [],
+            "rejected": [],
+            "posture_advice": "watch",
+            "warnings": [],
+            "news": {},
+            "market_modules": {},
+            "source_status": {"all_spot": {"status": "ok"}},
+            "xuanwu_pool": {},
+            "recommendation_allowed": False,
+            "historical_mode": "snapshot",
+            "data_quality": "ok",
+            "tradable": False,
+            "no_trade_reason": "no low-risk entry",
+            "block_reasons": [],
+            "candidate_evidence": {
+                "000001": {
+                    "code": "000001",
+                    "decision": {"status": "watch", "reason": "test"},
+                }
+            },
+            "watchlist": [],
+            "final_recommendations": [],
+            "strategy_signals": {},
+            "strategy_candidates": [],
+        }
+        return {"date": "20260101", "candidates": 0, "warnings": []}
+
+    monkeypatch.setattr(scheduler, "_step_scan", fake_scan)
+
+    summary = scheduler.run()
+
+    assert summary["overall_status"] == "degraded"
+    assert summary["force_degraded"] is True
+    report_path = Path(summary["report_path"])
+    assert report_path.parent.name == "degraded"
+    report_json = report_path.with_suffix(".json")
+    data = json.loads(report_json.read_text(encoding="utf-8"))
+    assert data["candidate_evidence"]["000001"]["decision"]["status"] == "watch"
+    assert not (tmp_path / "reports" / "latest_ok.json").exists()
