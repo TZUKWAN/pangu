@@ -6,6 +6,7 @@ import os
 import time
 import json
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 import urllib.parse
 import urllib.request
@@ -82,7 +83,54 @@ def _http_json(url: str, params: dict[str, Any], *, timeout: float = 10.0) -> di
     return json.loads(text)
 
 
-def _all_a_share_codes(timeout_sec: float = 8.0) -> list[str]:
+def _codes_from_local_snapshot(date: str | None = None) -> list[str]:
+    """从本地 all_spot 快照读取全市场代码列表，绕开东财/adata 网络依赖。
+
+    优先读 data/snapshots/<date>/all_spot.parquet；date 为空时取最新快照目录。
+    """
+    try:
+        snapshot_root = Path("data/snapshots")
+        if not snapshot_root.exists():
+            return []
+        if date:
+            target_dir = snapshot_root / date
+        else:
+            # 取最新日期目录
+            dirs = sorted([d for d in snapshot_root.iterdir() if d.is_dir()], reverse=True)
+            target_dir = dirs[0] if dirs else None
+        if not target_dir or not target_dir.exists():
+            return []
+        spot_file = target_dir / "all_spot.parquet"
+        if not spot_file.exists():
+            return []
+        df = pd.read_parquet(spot_file)
+        if df is None or df.empty:
+            return []
+        # 找代码列
+        code_col = None
+        for col in df.columns:
+            if "代码" in str(col) or "code" in str(col).lower():
+                code_col = col
+                break
+        if code_col is None:
+            code_col = df.columns[0]
+        return df[code_col].astype(str).str.extract(r"(\d{6})", expand=False).dropna().tolist()
+    except Exception:
+        return []
+
+
+def _all_a_share_codes(timeout_sec: float = 8.0, snapshot_date: str | None = None) -> list[str]:
+    """获取全市场 A 股代码列表：本地快照优先，adata 兜底。
+
+    本地快照绕开东财/adata 的网络依赖（东财 push2his 在部分网络环境不可达），
+    adata 作为 fallback 保留多源能力。
+    """
+    # 1. 本地快照优先
+    codes = _codes_from_local_snapshot(snapshot_date)
+    if codes:
+        return codes
+
+    # 2. adata 兜底
     try:
         import adata  # type: ignore
     except Exception:
@@ -204,7 +252,15 @@ class SinaSpotProvider(SourceProvider):
         t0 = time.monotonic()
         if os.environ.get("PANGU_TDX_FALLBACK", "1") == "0":
             return failed_result(source=self.name, kind=self.kind, latency=0.0, warning="disabled_by_PANGU_TDX_FALLBACK", data_mode=context.mode)
-        codes = _all_a_share_codes()
+        # 本地快照日期目录用 YYYY-MM-DD；effective_date 是 YYYYMMDD
+        snap_date = None
+        if context.effective_date:
+            d = str(context.effective_date)
+            if len(d) == 8 and d.isdigit():
+                snap_date = f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+            else:
+                snap_date = d
+        codes = _all_a_share_codes(snapshot_date=snap_date)
         if not codes:
             return failed_result(source=self.name, kind=self.kind, latency=time.monotonic() - t0, warning="code_list_unavailable", data_mode=context.mode)
         rows: list[dict[str, Any]] = []

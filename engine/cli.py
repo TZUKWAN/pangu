@@ -189,11 +189,26 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
 
 
 def cmd_report(args: argparse.Namespace, cfg: dict) -> int:
-    pipe = _build_pipeline(cfg)
-    result = pipe.run(args.date)
     report_dir = cfg.get("output", {}).get("report_dir", "data/reports")
     out_dir = Path(report_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    date = args.date
+
+    # 默认行为：渲染已有 JSON 报告，不重跑 Pipeline（避免 180-300s 超时）。
+    # 只有显式 --rerun 才触发完整 Pipeline 重跑。
+    if not getattr(args, "rerun", False):
+        loaded = _load_existing_report(out_dir, date)
+        if loaded is not None:
+            result, json_path = loaded
+            from .report import render_markdown
+            print(f"# 渲染已有报告: {json_path}（用 --rerun 强制重跑 Pipeline）\n")
+            print(render_markdown(result))
+            return 0
+        # 没有找到已有报告 → 回退到重跑（并提示）
+        print(f"# 未找到 {date or '今天'} 的已有报告，回退到重跑 Pipeline\n")
+
+    pipe = _build_pipeline(cfg)
+    result = pipe.run(date)
     # 同时保存 P0 完整 JSON 报告与 Markdown 简报
     payload = json.dumps(result.to_dict(), ensure_ascii=False, indent=2)
     (out_dir / f"{result.date}_p0.json").write_text(payload, encoding="utf-8")
@@ -203,6 +218,38 @@ def cmd_report(args: argparse.Namespace, cfg: dict) -> int:
     from .report import render_markdown
     print(render_markdown(result))
     return 0
+
+
+def _load_existing_report(report_dir: Path, date: str | None) -> tuple[PipelineResult, Path] | None:
+    """尝试加载已有 JSON 报告并重建 PipelineResult。失败返回 None。"""
+    from .pipeline import PipelineResult
+    # 候选文件名优先级：<date>.json > <date>_p0.json > latest_ok.json
+    candidates: list[Path] = []
+    if date:
+        candidates.append(report_dir / f"{date}.json")
+        candidates.append(report_dir / f"{date}_p0.json")
+    else:
+        latest_ok = report_dir / "latest_ok.json"
+        if latest_ok.exists():
+            candidates.append(latest_ok)
+        # 取目录下最新的 *.json（排除 _p0、latest_ok、degraded）
+        jsons = sorted(
+            (p for p in report_dir.glob("*.json") if not p.name.endswith("_p0.json") and p.name != "latest_ok.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        candidates.extend(jsons[:1])
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or "date" not in data:
+                continue
+            return PipelineResult.from_dict(data), path
+        except Exception:
+            continue
+    return None
 
 
 def cmd_daily(args: argparse.Namespace, cfg: dict) -> int:
@@ -348,10 +395,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-c", "--config", default=None, help="配置文件路径")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
-    for name, fn in [("sentiment", cmd_sentiment), ("scan", cmd_scan), ("report", cmd_report)]:
+    for name, fn in [("sentiment", cmd_sentiment), ("scan", cmd_scan)]:
         p = sub.add_parser(name, help=f"{name} 命令")
         p.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
         p.set_defaults(func=fn)
+
+    # report：默认只渲染已有 JSON 报告，--rerun 才重跑完整 Pipeline
+    p_report = sub.add_parser("report", help="渲染或重跑选股报告")
+    p_report.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
+    p_report.add_argument("--rerun", action="store_true", help="强制重跑完整 Pipeline（默认只渲染已有 JSON）")
+    p_report.set_defaults(func=cmd_report)
 
     # market-phase：市场阶段识别
     p_phase = sub.add_parser("market-phase", help="识别当前市场阶段/情绪周期")

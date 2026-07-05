@@ -110,6 +110,35 @@ class PipelineResult:
     def to_json(self, indent: int = 2) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, indent=indent)
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "PipelineResult":
+        """从 to_dict() 输出的字典重建 PipelineResult（供 cli report 渲染已有 JSON 复用）。"""
+        result = cls(
+            date=data["date"],
+            sentiment=data.get("sentiment", {}),
+            boards=data.get("boards", []),
+            candidates=data.get("candidates", []),
+            rejected=data.get("rejected", []),
+            posture_advice=data.get("posture_advice", ""),
+            warnings=data.get("warnings", []),
+            news=data.get("news", {}),
+            market_modules=data.get("market_modules", {}),
+            source_status=data.get("source_status", data.get("source_state", {})),
+            xuanwu_pool=data.get("xuanwu_pool", {}),
+            recommendation_allowed=data.get("recommendation_allowed", False),
+            historical_mode=data.get("historical_mode", "live"),
+            data_quality=data.get("data_quality", "unknown"),
+            tradable=data.get("tradable", False),
+            no_trade_reason=data.get("no_trade_reason", ""),
+            block_reasons=data.get("block_reasons", []),
+            candidate_evidence=data.get("candidate_evidence", {}),
+        )
+        result.watchlist = data.get("watchlist", [])
+        result.final_recommendations = data.get("final_recommendations", [])
+        result.strategy_signals = data.get("strategy_signals", {})
+        result.strategy_candidates = data.get("strategy_candidates", [])
+        return result
+
 
 class Pipeline:
     """主链路。"""
