@@ -352,6 +352,43 @@ class EntryExitEngine:
             style="support_dip",
         ))
 
+        # 箱体收回买点：当价格处于近期高低点构成的箱体内（未突破也未破位），
+        # 在箱体中轴附近提供"箱体收回"型买点。仅当箱体宽度足够（>3%）时生成。
+        box_high = recent_high
+        box_low = recent_low
+        box_width = (box_high - box_low) / max(box_low, 1e-9)
+        if box_width > 0.03 and box_low <= close <= box_high:
+            mid = (box_high + box_low) / 2.0
+            # 现价位于箱体下半区时，中轴收回是合理低吸
+            if close <= mid * 1.005 and mid < close * 1.02:
+                points.append(BuyPoint(
+                    price=round(mid, 2),
+                    type="箱体收回位",
+                    condition=f"箱体（{box_low:.2f}-{box_high:.2f}）中轴 {mid:.2f} 收回低吸",
+                    style="range_reclaim",
+                ))
+
+        # 龙头分歧收回买点：MA5 与 MA10 同时高于 MA20（多头结构），
+        # 且现价回踩到 MA10/MA20 附近——典型的龙头分歧后收回买点。
+        ma5 = ma_map.get(5)
+        ma10 = ma_map.get(10)
+        ma20 = ma_map.get(20)
+        if (
+            ma5 and ma10 and ma20
+            and not any(pd.isna(v) for v in (ma5, ma10, ma20))
+            and ma5 > ma20 and ma10 > ma20
+            and ma10 < close * 1.01
+        ):
+            # 给出 MA10 附近的分歧收回买点
+            reclaim_price = float(ma10)
+            if reclaim_price < close * 1.005:
+                points.append(BuyPoint(
+                    price=round(reclaim_price, 2),
+                    type="分歧收回位",
+                    condition=f"龙头分歧后回踩 MA10（{reclaim_price:.2f}）收回确认",
+                    style="leader_divergence_reclaim",
+                ))
+
         # 选主买点：短线策略只把突破位作为触发确认，不作为默认追价买点。
         # 1. 优先选择现价下方 0-8% 的回踩位；
         # 2. 其次选择现价下方 0-12% 的支撑位低吸；
@@ -362,7 +399,7 @@ class EntryExitEngine:
             p for p in pullback_points
             if close * 0.92 <= p.price <= close * 1.005
         ]
-        support = points[-1]
+        support = next((p for p in points if p.type == "支撑位"), points[0])
         actionable_support = support if close * 0.88 <= support.price <= close * 1.002 else None
 
         if actionable_pullbacks:

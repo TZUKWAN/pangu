@@ -30,6 +30,14 @@ class NewsQueryContext:
     candidates: list[dict[str, Any]] = field(default_factory=list)
     # 候选股已解析出的题材（来自 news_sentiment），code -> set(theme)
     candidate_themes: dict[str, set[str]] = field(default_factory=dict)
+    # 显式题材/行业/个股清单（可与 hot_themes/boards/candidates 互补，便于查询层构造）
+    themes: list[str] = field(default_factory=list)
+    industries: list[str] = field(default_factory=list)
+    stocks: list[str] = field(default_factory=list)
+    # 显式关键词（可覆盖默认词表，便于策略层注入特定题材关键词）
+    positive_keywords: list[str] = field(default_factory=list)
+    negative_keywords: list[str] = field(default_factory=list)
+    risk_keywords: list[str] = field(default_factory=list)
 
     @property
     def theme_names(self) -> set[str]:
@@ -52,7 +60,21 @@ class NewsQueryContext:
                             names.add(v)
                         elif isinstance(v, (list, tuple)):
                             names.update(str(x) for x in v)
+        # 显式题材/行业也纳入跟踪范围
+        names.update(self.themes)
+        names.update(self.industries)
         return {n for n in names if n}
+
+    @property
+    def stock_codes(self) -> set[str]:
+        """所有应主动跟踪的个股代码。"""
+        codes: set[str] = set()
+        for c in self.candidates:
+            v = str(c.get("code") or "").strip()
+            if v:
+                codes.add(v)
+        codes.update(str(s).strip() for s in self.stocks if str(s).strip())
+        return codes
 
 
 @dataclass
@@ -95,6 +117,10 @@ class CandidateEvidence:
     sentiment_label: str = "neutral"
     support_count: int = 0
     verdict_reason: str = ""
+    # 个股直接相关的新闻条数（含个股新闻、快讯直接提及代码/名称）
+    direct_count: int = 0
+    # 仅来自题材继承的新闻条数（无个股直接关联）
+    inherited_count: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,6 +129,9 @@ class CandidateEvidence:
             "themes": self.themes,
             "sentiment_label": self.sentiment_label,
             "support_count": self.support_count,
+            "direct_count": self.direct_count,
+            "inherited_count": self.inherited_count,
+            "individual_backed": self.direct_count > 0,
             "sources": sorted(self.sources),
             "bullish_snippets": self.bullish_snippets[:5],
             "bearish_snippets": self.bearish_snippets[:5],
@@ -145,6 +174,11 @@ class NewsEvidenceCollector:
             "top_bullish_themes": self._top_themes(theme_evidence, "bullish"),
             "top_bearish_themes": self._top_themes(theme_evidence, "bearish"),
             "risk_events": self._flatten_risks(theme_evidence),
+            # 顶层多空聚合：把所有题材/快讯维度的证据按类别汇总
+            "bullish_news": self._flatten_by_label(theme_evidence, "bullish"),
+            "bearish_news": self._flatten_by_label(theme_evidence, "bearish"),
+            "neutral_news": self._flatten_neutral(theme_evidence, candidate_evidence),
+            "catalysts": self._flatten_catalysts(theme_evidence, candidate_evidence),
             "require_evidence": self.require_evidence,
         }
 
@@ -273,6 +307,9 @@ class NewsEvidenceCollector:
                 continue
             name = str(cand.get("name") or "").strip()
             ev = CandidateEvidence(code=code, name=name)
+            direct_bullish = 0
+            direct_bearish = 0
+            direct_risk = 0
 
             # 候选股关联题材
             themes = set(ctx.candidate_themes.get(code, set()))
@@ -281,21 +318,25 @@ class NewsEvidenceCollector:
                 themes.add(board)
             ev.themes = sorted(themes)
 
-            # 1. 个股新闻
+            # 1. 个股新闻（直接关联）
             for item in stock_news.get(code, []):
                 text = str(item.get("title") or item.get("content") or "")
                 src = self._source_from_item(item)
                 clf = self._classify(text)
                 ev.support_count += 1
+                ev.direct_count += 1
                 ev.sources.add(src)
                 if "bullish" in clf["labels"]:
                     ev.bullish_snippets.append(self._snippet(text))
+                    direct_bullish += 1
                 if "bearish" in clf["labels"]:
                     ev.bearish_snippets.append(self._snippet(text))
+                    direct_bearish += 1
                 if "risk" in clf["labels"]:
                     ev.risk_events.append(self._snippet(text))
+                    direct_risk += 1
 
-            # 2. 快讯中直接提到该股票代码或名称
+            # 2. 快讯中直接提到该股票代码或名称（直接关联）
             for flash in flashes:
                 text = str(flash.get("content") or flash.get("title") or "")
                 if code not in text and name not in text:
@@ -305,30 +346,56 @@ class NewsEvidenceCollector:
                 src = self._source_from_item(flash)
                 clf = self._classify(text)
                 ev.support_count += 1
+                ev.direct_count += 1
                 ev.sources.add(src)
                 if "bullish" in clf["labels"]:
                     ev.bullish_snippets.append(self._snippet(text))
+                    direct_bullish += 1
                 if "bearish" in clf["labels"]:
                     ev.bearish_snippets.append(self._snippet(text))
+                    direct_bearish += 1
                 if "risk" in clf["labels"]:
                     ev.risk_events.append(self._snippet(text))
+                    direct_risk += 1
 
-            # 3. 继承题材证据
+            # 3. 继承题材证据（仅作上下文，不计入个股加分）
+            inherited_bullish = 0
             for theme in themes:
                 te = theme_evidence.get(theme)
                 if not te:
                     continue
                 ev.sources.update(te.sources)
+                before = len(ev.bullish_snippets)
                 ev.bullish_snippets.extend(te.bullish_snippets)
                 ev.bearish_snippets.extend(te.bearish_snippets)
                 ev.risk_events.extend(te.risk_events)
+                inherited_bullish += len(te.bullish_snippets)
+            ev.inherited_count = inherited_bullish + sum(
+                len(theme_evidence.get(t).bearish_snippets) + len(theme_evidence.get(t).risk_events)
+                for t in themes if theme_evidence.get(t)
+            )
 
             ev.bullish_snippets = self._dedup_snippets(ev.bullish_snippets)[: self.max_candidate_evidence]
             ev.bearish_snippets = self._dedup_snippets(ev.bearish_snippets)[: self.max_candidate_evidence]
             ev.risk_events = self._dedup_snippets(ev.risk_events)[: self.max_candidate_evidence]
             ev.support_count = max(ev.support_count, len(ev.bullish_snippets) + len(ev.bearish_snippets) + len(ev.risk_events))
-            ev.sentiment_label, _ = self._label_score(ev)
-            ev.verdict_reason = self._verdict_reason(ev)
+
+            # 定性：只有"直接关联"的新闻才能真正改变个股多空定性。
+            # 只有题材继承、无个股直接关联时，保持中性，不因泛题材利好加分（防"伪利好"）。
+            if ev.direct_count == 0:
+                # 仅题材继承：不计入加分，定性中性（除非有重大风险事件必须降级）
+                ev.sentiment_label = "neutral"
+                ev.verdict_reason = self._verdict_reason(ev, individual_backed=False)
+            else:
+                # 用直接相关的片段重新打分
+                direct_proxy = ThemeEvidence(
+                    theme=code,
+                    bullish_snippets=["d"] * direct_bullish,
+                    bearish_snippets=["d"] * direct_bearish,
+                    risk_events=["d"] * direct_risk,
+                )
+                ev.sentiment_label, _ = self._label_score(direct_proxy)
+                ev.verdict_reason = self._verdict_reason(ev, individual_backed=True)
             evidence[code] = ev
         return evidence
 
@@ -353,10 +420,14 @@ class NewsEvidenceCollector:
         score = max(0.0, min(100.0, 50.0 + (b - br - r * 1.5) / max(total, 1) * 50.0))
         return label, score
 
-    def _verdict_reason(self, ev: CandidateEvidence) -> str:
+    def _verdict_reason(self, ev: CandidateEvidence, individual_backed: bool = True) -> str:
         b = len(ev.bullish_snippets)
         br = len(ev.bearish_snippets)
         r = len(ev.risk_events)
+        if not individual_backed:
+            if r > 0:
+                return f"仅泛题材证据，无个股直接关联（继承风险{r} 条），不加分"
+            return f"仅泛题材证据，无个股直接关联（继承多{b} / 空{br}），不加分"
         if ev.sentiment_label == "bearish":
             return f"负面/风险新闻占主导（多{b} / 空{br} / 风险{r}）"
         if ev.sentiment_label == "mixed":
@@ -419,3 +490,69 @@ class NewsEvidenceCollector:
                     seen.add(key)
                     risks.append(f"[{ev.theme}] {r}")
         return risks[:10]
+
+    def _flatten_by_label(self, theme_evidence: dict[str, ThemeEvidence], label: str) -> list[str]:
+        """按多/空类别扁平化所有题材的证据片段。"""
+        out: list[str] = []
+        seen: set[str] = set()
+        src = "bullish_snippets" if label == "bullish" else "bearish_snippets"
+        for ev in theme_evidence.values():
+            if ev.sentiment_label != label and label != "bearish":
+                continue
+            snippets = getattr(ev, src, [])
+            for s in snippets:
+                key = s[:40]
+                if key not in seen:
+                    seen.add(key)
+                    out.append(f"[{ev.theme}] {s}")
+        return out[:15]
+
+    def _flatten_neutral(
+        self,
+        theme_evidence: dict[str, ThemeEvidence],
+        candidate_evidence: dict[str, CandidateEvidence],
+    ) -> list[dict[str, Any]]:
+        """聚合中性新闻：题材为中性且有个股证据为中性/无证据的记录。"""
+        out: list[dict[str, Any]] = []
+        for ev in theme_evidence.values():
+            if ev.sentiment_label == "neutral" and ev.support_count == 0:
+                continue
+            if ev.sentiment_label == "neutral":
+                out.append({"type": "theme", "theme": ev.theme, "support_count": ev.support_count})
+        for code, cev in candidate_evidence.items():
+            if cev.sentiment_label == "neutral":
+                out.append({
+                    "type": "candidate",
+                    "code": code,
+                    "name": cev.name,
+                    "individual_backed": cev.direct_count > 0,
+                    "verdict_reason": cev.verdict_reason,
+                })
+        return out[:20]
+
+    def _flatten_catalysts(
+        self,
+        theme_evidence: dict[str, ThemeEvidence],
+        candidate_evidence: dict[str, CandidateEvidence],
+    ) -> list[dict[str, Any]]:
+        """聚合催化事件：bullish 且个股直接关联的强催化。"""
+        out: list[dict[str, Any]] = []
+        for code, cev in candidate_evidence.items():
+            if cev.sentiment_label == "bullish" and cev.direct_count > 0:
+                out.append({
+                    "code": code,
+                    "name": cev.name,
+                    "themes": cev.themes,
+                    "support_count": cev.support_count,
+                    "direct_count": cev.direct_count,
+                    "top_snippet": cev.bullish_snippets[0] if cev.bullish_snippets else "",
+                })
+        # 题材级催化
+        for ev in theme_evidence.values():
+            if ev.sentiment_label == "bullish" and ev.support_count >= 2:
+                out.append({
+                    "theme": ev.theme,
+                    "support_count": ev.support_count,
+                    "score": round(ev.score, 1),
+                })
+        return out[:15]

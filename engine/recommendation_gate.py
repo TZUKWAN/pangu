@@ -35,6 +35,7 @@ class GateResult:
     watchlist: list[dict[str, Any]] = field(default_factory=list)
     rejected: list[dict[str, Any]] = field(default_factory=list)
     gate_log: list[dict[str, Any]] = field(default_factory=list)
+    block_reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -42,6 +43,7 @@ class GateResult:
             "watchlist": self.watchlist,
             "rejected": self.rejected,
             "gate_log": self.gate_log,
+            "block_reasons": self.block_reasons,
         }
 
 
@@ -124,6 +126,18 @@ class RecommendationGate:
         result.final_recommendations = self._dedup(result.final_recommendations)
         result.watchlist = self._dedup(result.watchlist)
         result.rejected = self._dedup(result.rejected)
+
+        # 聚合 block_reasons：按 gate 维度统计被拦截原因（不去重，保留每条记录的统计意义）
+        blocked = [g for g in result.gate_log if not g.get("passed", True) and g.get("gate") != "global"]
+        seen: set[str] = set()
+        block_reasons: list[str] = []
+        for g in blocked:
+            reason = str(g.get("reason") or "").strip()
+            key = f"{g.get('gate')}|{reason}"
+            if reason and key not in seen:
+                seen.add(key)
+                block_reasons.append(f"[{g.get('gate')}] {reason}")
+        result.block_reasons = block_reasons
         return result
 
     def _judge_strategy_signal(

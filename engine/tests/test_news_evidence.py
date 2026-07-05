@@ -42,6 +42,7 @@ def test_theme_evidence_bearish_with_risk(collector: NewsEvidenceCollector) -> N
 
 
 def test_candidate_evidence_inherits_theme(collector: NewsEvidenceCollector) -> None:
+    """场景13：泛题材利好、无个股直接关联时不加分（保持中性）。"""
     flashes = [
         {"content": "机器人赛道利好，政策大力支持", "source": "cls", "subjects": ["机器人"]},
     ]
@@ -54,9 +55,46 @@ def test_candidate_evidence_inherits_theme(collector: NewsEvidenceCollector) -> 
     )
     result = collector.collect(ctx, flashes, {})
     ev = result["candidate_evidence"]["000001"]
-    assert ev["sentiment_label"] == "bullish"
+    # 仅题材继承、无个股直接关联：保持中性，不加个股多空分
+    assert ev["sentiment_label"] == "neutral"
+    assert ev["individual_backed"] is False
+    assert ev["direct_count"] == 0
     assert "机器人" in ev["themes"]
-    assert ev["bullish_snippets"]
+    # 继承的题材片段仍可见于上下文，但不改变定性
+    assert ev["inherited_count"] >= 1
+
+
+def test_candidate_evidence_individual_backed_gets_bullish(collector: NewsEvidenceCollector) -> None:
+    """对照场景13：个股直接被快讯提及 + 题材利好 → 可加分。"""
+    flashes = [
+        {"content": "000001 机器人赛道利好，政策大力支持", "source": "cls", "subjects": ["机器人"]},
+    ]
+    candidates = [{"code": "000001", "name": "测试机器人", "board": "机器人"}]
+    ctx = NewsQueryContext(
+        date="20260703",
+        hot_themes=[("机器人", 1)],
+        candidates=candidates,
+        candidate_themes={"000001": {"机器人"}},
+    )
+    result = collector.collect(ctx, flashes, {})
+    ev = result["candidate_evidence"]["000001"]
+    assert ev["sentiment_label"] == "bullish"
+    assert ev["individual_backed"] is True
+    assert ev["direct_count"] >= 1
+
+
+def test_top_level_aggregations_present(collector: NewsEvidenceCollector) -> None:
+    """顶层多空/中性/催化聚合字段应存在。"""
+    flashes = [
+        {"content": "算力板块大涨", "source": "cls", "subjects": ["算力"]},
+    ]
+    ctx = NewsQueryContext(date="20260703", hot_themes=[("算力", 1)])
+    result = collector.collect(ctx, flashes, {})
+    for key in ("bullish_news", "bearish_news", "neutral_news", "catalysts"):
+        assert key in result
+    assert isinstance(result["bullish_news"], list)
+    assert isinstance(result["neutral_news"], list)
+    assert isinstance(result["catalysts"], list)
 
 
 def test_candidate_evidence_direct_stock_mention(collector: NewsEvidenceCollector) -> None:

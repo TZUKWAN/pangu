@@ -76,6 +76,26 @@ class AntiChaseGuard:
                 "dist_ma20": 0.25,
                 "daily_pct": 0.09,
             }
+        elif strategy == "limit_up":
+            # 连板梯队：核心龙头/中军允许继续强势，但后排补涨禁入 final。
+            # 角色 role 用于区分核心 vs 后排；后排阈值更严。
+            if role in ("龙头", "中军", "leader", "core", "中军"):
+                th = {
+                    "ret_3d": 0.30,
+                    "ret_5d": 0.50,
+                    "dist_ma5": 0.12,
+                    "dist_ma20": 0.30,
+                    "daily_pct": 0.10,
+                }
+            else:
+                # 后排补涨：阈值收紧，更容易触发 blocked
+                th = {
+                    "ret_3d": 0.15,
+                    "ret_5d": 0.25,
+                    "dist_ma5": 0.07,
+                    "dist_ma20": 0.18,
+                    "daily_pct": 0.06,
+                }
         elif strategy == "trend_pullback":
             th = {
                 "ret_3d": 0.15,
@@ -111,7 +131,10 @@ class AntiChaseGuard:
         if _hit("3日涨幅", metrics["return_3d"], th["ret_3d"]):
             watch_reasons.append(f"近3日涨幅 {metrics['return_3d']*100:.1f}% 超出阈值 {th['ret_3d']*100:.0f}%")
         if _hit("5日涨幅", metrics["return_5d"], th["ret_5d"]):
-            if strategy in ("leader", "limit_up") or role in ("龙头", "中军"):
+            if strategy == "limit_up" and role not in ("龙头", "中军", "leader", "core", "中军"):
+                # 连板梯队后排补涨：5 日涨幅过高直接 blocked，禁入 final
+                blocked_reasons.append(f"连板梯队后排补涨，近5日涨幅 {metrics['return_5d']*100:.1f}% 过高")
+            elif strategy in ("leader", "limit_up") or role in ("龙头", "中军"):
                 watch_reasons.append(f"近5日涨幅 {metrics['return_5d']*100:.1f}% 过高")
             else:
                 blocked_reasons.append(f"近5日涨幅 {metrics['return_5d']*100:.1f}% 过高，非核心票")
