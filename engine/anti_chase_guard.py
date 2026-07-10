@@ -46,7 +46,8 @@ class AntiChaseGuard:
         ma20 = safe_float(ma_map.get("ma20"), 0.0)
 
         # 计算短期涨幅
-        ret_3d, ret_5d = self._short_term_returns(code, date)
+        technical_kline = (item.get("technical") or {}).get("kline")
+        ret_3d, ret_5d = self._short_term_returns(code, date, technical_kline)
 
         metrics = {
             "return_3d": round(ret_3d, 4) if ret_3d is not None else None,
@@ -149,7 +150,7 @@ class AntiChaseGuard:
                 watch_reasons.append(f"当日涨幅 {metrics['daily_pct']*100:.1f}% 超出阈值")
 
         # 缩量加速：近3日连续上涨且成交量递减（需要 K 线）
-        if self._is_shrinking_acceleration(code, date):
+        if self._is_shrinking_acceleration(code, date, technical_kline):
             blocked_reasons.append("连续缩量加速，风险过高")
 
         # 结果判定
@@ -189,12 +190,17 @@ class AntiChaseGuard:
             return "breakout_confirm"
         return "default"
 
-    def _short_term_returns(self, code: str, date: str | None) -> tuple[Optional[float], Optional[float]]:
+    def _short_term_returns(
+        self,
+        code: str,
+        date: str | None,
+        technical_kline: Any = None,
+    ) -> tuple[Optional[float], Optional[float]]:
         """返回 (3日涨幅, 5日涨幅)。"""
         if not code:
             return None, None
         try:
-            k = self.dl.daily_kline(code, days=10, date=date)
+            k = pd.DataFrame(technical_kline) if technical_kline else self.dl.daily_kline(code, days=10, date=date)
             if k is None or len(k) < 6:
                 return None, None
             close_col = None
@@ -215,12 +221,17 @@ class AntiChaseGuard:
             logger.debug("%s 短期涨幅计算失败: %s", code, e)
             return None, None
 
-    def _is_shrinking_acceleration(self, code: str, date: str | None) -> bool:
+    def _is_shrinking_acceleration(
+        self,
+        code: str,
+        date: str | None,
+        technical_kline: Any = None,
+    ) -> bool:
         """判断近3日是否连续上涨且成交量递减。"""
         if not code:
             return False
         try:
-            k = self.dl.daily_kline(code, days=10, date=date)
+            k = pd.DataFrame(technical_kline) if technical_kline else self.dl.daily_kline(code, days=10, date=date)
             if k is None or len(k) < 4:
                 return False
             close_col = None

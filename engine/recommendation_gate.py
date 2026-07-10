@@ -76,6 +76,7 @@ class RecommendationGate:
         candidate_map: dict[str, StockCandidate],
         candidates: Optional[list[dict[str, Any]]] = None,
         llm_review_map: Optional[dict[str, dict[str, Any]]] = None,
+        evidence_map: Optional[dict[str, dict[str, Any]]] = None,
     ) -> GateResult:
         result = GateResult()
         if not self.recommendation_allowed:
@@ -99,11 +100,26 @@ class RecommendationGate:
                     best_signal[code] = (strategy_name, sig)
 
         all_codes = set(candidate_map.keys()) | set(candidate_dict.keys())
+        evidence_required = evidence_map is not None
+        evidence_map = evidence_map or {}
 
-        for code in all_codes:
+        for code in sorted(all_codes):
             cand = candidate_map.get(code)
             cand_dict = candidate_dict.get(code)
             signal_pair = best_signal.get(code)
+
+            if evidence_required and code not in evidence_map:
+                item = dict(cand_dict) if cand_dict else (cand.to_dict() if cand else {"code": code})
+                item["gate_status"] = "rejected"
+                item["reject_reason"] = "CandidateEvidence 缺失，禁止进入推荐闸门"
+                result.rejected.append(item)
+                result.gate_log.append({
+                    "code": code,
+                    "gate": "candidate_evidence",
+                    "passed": False,
+                    "reason": item["reject_reason"],
+                })
+                continue
 
             if signal_pair:
                 strategy_name, sig = signal_pair
@@ -113,6 +129,13 @@ class RecommendationGate:
                               "anti_chase", "entry_plan", "entry_style", "news_evidence",
                               "volume_audit"):
                         item.setdefault(k, cand_dict.get(k))
+                # 优先从证据层读取审计字段（ evidence_map 存在时）
+                ev = evidence_map.get(code)
+                if ev:
+                    item["candidate_evidence"] = ev
+                    for k in ("data_quality", "volume_audit", "anti_chase", "news_evidence", "entry_plan"):
+                        if ev.get(k):
+                            item[k] = ev[k]
                 self._judge_strategy_signal(code, strategy_name, sig, cand, item, result, watch_codes, rejected_codes, llm_review_map)
             else:
                 # 旧 trend 扫描补充候选：无策略信号，只过 guard，不进入正式推荐
@@ -170,7 +193,25 @@ class RecommendationGate:
 
         is_watch = code in watch_codes
 
-        # 3. 数据真实性：正式推荐必须有真实 RPS
+        if is_watch:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "QuantGuard 护栏观察"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "guard", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 3. 数据质量：正式推荐只能使用明确 ok 的证据链。
+        strict_evidence = isinstance(item.get("candidate_evidence"), dict)
+        data_quality = item.get("data_quality") or {}
+        overall_quality = data_quality.get("overall") if isinstance(data_quality, dict) else data_quality
+        if strict_evidence and overall_quality != "ok":
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"数据质量 {overall_quality or 'unknown'}，禁止正式推荐"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "data_quality", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 4. 数据真实性：正式推荐必须有真实 RPS
         if cand and cand.rps_mode != "real" and not is_watch:
             item["gate_status"] = "watch"
             item["watch_reason"] = f"RPS 模式为 {cand.rps_mode}"
@@ -178,7 +219,7 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "rps_real", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 4. 资金流确认：不可用不直接阻断，除非策略强依赖资金流。
+        # 5. 资金流确认：不可用不直接阻断，除非策略强依赖资金流。
         valid_fund_status = {"available", "ok"}
         if cand and cand.fund_flow_status not in valid_fund_status and self._strategy_requires_fund_flow(strategy_name) and not is_watch:
             item["gate_status"] = "watch"
@@ -189,8 +230,14 @@ class RecommendationGate:
         if cand and cand.fund_flow_status not in valid_fund_status:
             item["fund_flow_risk"] = f"资金流状态 {cand.fund_flow_status}，仅作中性偏弱证据"
 
-        # 5. 量能审计：缺失/异常/无量突破不能进入 final
+        # 6. 量能审计：缺失/异常/无量突破不能进入 final
         va = item.get("volume_audit") or {}
+        if strict_evidence and not va:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "量能审计缺失，禁止正式推荐"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "volume_audit", "passed": False, "reason": item["watch_reason"]})
+            return
         if va:
             va_status = va.get("status")
             pattern = va.get("price_volume_pattern")
@@ -207,7 +254,7 @@ class RecommendationGate:
                 result.gate_log.append({"code": code, "gate": "volume_audit", "passed": False, "reason": item["watch_reason"]})
                 return
 
-        # 6. EntryExit 可执行（优先使用 Pipeline 已计算的买卖点）
+        # 7. EntryExit 可执行（优先使用 Pipeline 已计算的买卖点）
         if item.get("entry_exit") and item["entry_exit"].get("buy_points"):
             pass
         else:
@@ -226,8 +273,14 @@ class RecommendationGate:
                 result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
                 return
 
-        # 7. 反追涨闸门
+        # 8. 反追涨闸门
         ac = item.get("anti_chase") or {}
+        if strict_evidence and not ac:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "反追涨审计缺失，禁止正式推荐"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "anti_chase", "passed": False, "reason": item["watch_reason"]})
+            return
         if ac.get("status") == "blocked":
             item["gate_status"] = "rejected"
             item["reject_reason"] = f"反追涨：{ac.get('reason', '')}"
@@ -241,8 +294,14 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "anti_chase", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 8. 条件买点：追价型买点禁止进入 final
+        # 9. 条件买点：追价型买点禁止进入 final
         entry_plan = item.get("entry_plan") or {}
+        if strict_evidence and not entry_plan:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "条件买点缺失，禁止正式推荐"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
+            return
         if entry_plan.get("is_chasing"):
             item["gate_status"] = "watch"
             item["watch_reason"] = f"追价型买点：{entry_plan.get('trigger_condition', '')}"
@@ -259,14 +318,26 @@ class RecommendationGate:
                 result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
                 return
 
-        # 9. 新闻多空证据审计
+        # 10. 新闻多空证据审计：重大风险才 rejected，一般利空降级 watch
         ev = item.get("news_evidence") or {}
+        if strict_evidence and not ev:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = "新闻证据缺失，禁止正式推荐"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
+            return
         ev_label = ev.get("sentiment_label", "")
-        if ev and ev_label == "bearish":
+        if ev and ev_label == "bearish" and ev.get("risk_events"):
             item["gate_status"] = "rejected"
-            item["reject_reason"] = f"新闻利空：{ev.get('verdict_reason', '')}"
+            item["reject_reason"] = f"新闻利空且命中重大风险：{ev.get('verdict_reason', '')}"
             result.rejected.append(item)
             result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["reject_reason"]})
+            return
+        if ev and ev_label == "bearish":
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"新闻利空（无重大风险）：{ev.get('verdict_reason', '')}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
             return
         if ev and ev_label == "mixed" and ev.get("risk_events"):
             item["gate_status"] = "watch"
@@ -281,7 +352,7 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 10. LLM 复核（若启用）
+        # 11. LLM 复核（若启用）
         review = llm_review_map.get(code) if llm_review_map else None
         if self.cfg.get("llm", {}).get("enable_review", False):
             if not review or not review.get("passed"):

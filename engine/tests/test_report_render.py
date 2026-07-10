@@ -113,6 +113,50 @@ def test_render_markdown_no_structured_section_when_no_p0_data():
     assert "净买入" not in md
 
 
+def test_render_markdown_accepts_gate_reject_reason():
+    result = _result([])
+    result.rejected = [{"code": "000001", "name": "测试股", "reject_reason": "重大风险新闻"}]
+    md = render_markdown(result)
+    assert "重大风险新闻" in md
+
+
+def test_new_report_keeps_compat_candidates_out_of_formal_recommendations():
+    result = _result([_full_candidate()])
+    result.final_recommendations = []
+    result.watchlist = [{
+        **_full_candidate(),
+        "watch_reason": "反追涨审计未通过",
+        "candidate_evidence": {"strategy": {"strategy_name": "趋势回踩"}},
+    }]
+    result.candidate_evidence = {"000001": {"decision": {"status": "watch"}}}
+    result.raw_candidate_count = 1
+    result.tradable = False
+    result.no_trade_reason = "数据完整，但无低风险买点"
+
+    md = render_markdown(result)
+
+    assert "本期无正式推荐" in md
+    assert "观察池（非推荐）" in md
+    assert "反追涨审计未通过" in md
+    assert "候选股池" not in md
+    assert "推荐度：80.0" not in md
+    assert "主买点" not in md
+
+
+def test_new_report_renders_only_gate_final_with_conditional_entry():
+    result = _result([_full_candidate()])
+    result.final_recommendations = [_full_candidate()]
+    result.watchlist = []
+    result.candidate_evidence = {"000001": {"decision": {"status": "final"}}}
+    result.raw_candidate_count = 1
+
+    md = render_markdown(result)
+
+    assert "正式推荐（已通过完整证据链）" in md
+    assert "条件买点" in md
+    assert "主买点" not in md
+
+
 def test_northbound_market_level():
     """market 路径：同花顺市场级北向，latest.net_buy 已是亿。"""
     v = {

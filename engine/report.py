@@ -52,6 +52,40 @@ def render_markdown(result: PipelineResult) -> str:
         f"> 数据更新于 {datetime.now().strftime('%Y-%m-%d %H:%M')}  ",
         f"> ⚠️ 本简报为决策辅助，不构成投资建议，盈亏自负。",
         "",
+    ]
+
+    # 新报告以 Gate 的正式决策为准；仅对不含新字段的历史对象回退到 candidates。
+    has_formal_contract = hasattr(result, "final_recommendations") and hasattr(result, "watchlist")
+    formal_recommendations = list(getattr(result, "final_recommendations", []) or [])
+    watchlist = list(getattr(result, "watchlist", []) or [])
+    if not has_formal_contract:
+        formal_recommendations = list(getattr(result, "candidates", []) or [])
+    elif result.data_quality != "ok" or not result.tradable:
+        # 展示层失效保护：质量降级或不可交易时，即使上游数据不一致也不得展示为正式推荐。
+        formal_recommendations = []
+
+    raw_candidate_count = int(
+        getattr(result, "raw_candidate_count", 0)
+        or len(getattr(result, "candidate_evidence", {}) or {})
+        or len(getattr(result, "candidates", []) or [])
+    )
+    lines += [
+        "## 决策结论",
+        "",
+        "| 数据质量 | 可交易 | 正式推荐 | 观察池 | 原始候选 |",
+        "|---------|--------|---------|--------|---------|",
+        f"| {result.data_quality} | {'是' if result.tradable else '否'} | {len(formal_recommendations)} | {len(watchlist)} | {raw_candidate_count} |",
+        "",
+    ]
+    if not formal_recommendations:
+        no_trade_reason = getattr(result, "no_trade_reason", "") or "当前没有通过完整证据链的低风险买点"
+        lines += [
+            f"> **本期无正式推荐。** {no_trade_reason}",
+            "> 观察池仅用于后续跟踪，不是推荐名单，也不代表可按现价买入。",
+            "",
+        ]
+
+    lines += [
         "## 一、情绪温度计",
         "",
         f"**温度 {s.get('temperature')} / 100 — {s.get('posture')}**",
@@ -76,12 +110,12 @@ def render_markdown(result: PipelineResult) -> str:
             lines.append(f"| {b['name']} | {b['pct']} | {b['fund_net_wan']} | {b['score']} |")
         lines.append("")
 
-    # 三、候选股
-    if result.candidates:
-        lines += ["## 三、候选股池（情绪+趋势筛选，已过量化护栏）", "",
+    # 三、正式推荐。兼容 candidates 仅用于旧对象，新 PipelineResult 不再以它承担推荐语义。
+    if formal_recommendations:
+        lines += ["## 三、正式推荐（已通过完整证据链）", "",
                   "| 代码 | 名称 | 板块 | 现价 | 涨跌% | RPS | 资金连流 | 推荐度 | 等级 | 上涨概率 | 预测涨幅 | 理由 |",
                   "|------|------|------|------|-------|-----|---------|--------|------|---------|---------|------|"]
-        for c in result.candidates:
+        for c in formal_recommendations:
             reasons = "；".join(c.get("reasons", []))
             rec = c.get("recommend", {})
             grade = rec.get("grade", "-")
@@ -95,7 +129,7 @@ def render_markdown(result: PipelineResult) -> str:
                 f"{score:.1f} | {grade} | {up_prob:.0f}%{calibrated} | {target[0]}-{target[1]}% | {rec.get('tag', reasons)} |"
             )
         lines += ["",
-                  "### 个股入选理由明细", ""]
+                  "### 正式推荐证据明细", ""]
         # P0 结构化源整体可用性（source_state.structured_data 聚合）：不渲染失败源为可用，逐源列出降级
         if structured_src_state:
             _src_states = {
@@ -110,7 +144,7 @@ def render_markdown(result: PipelineResult) -> str:
                     + (f"；降级/不可用 → {'，'.join(f'{k}={st}' for k, st in _not_ok.items())}" if _not_ok else "（全部正常）")
                 )
                 lines.append("")
-        for c in result.candidates:
+        for c in formal_recommendations:
             rec = c.get("recommend", {})
             lines.append(f"**{c['name']}（{c['code']}）** — {c['board']}，流通市值 {c['circ_mv_yi']:.0f}亿，换手 {c['turnover_rate']}%")
             if rec:
@@ -125,7 +159,7 @@ def render_markdown(result: PipelineResult) -> str:
                 bp = ee.get("buy_points", [])
                 primary = next((b for b in bp if b.get("is_primary")), bp[0] if bp else None)
                 if primary:
-                    lines.append(f"- 主买点：{primary['price']:.2f}（{primary['type']}）{primary.get('condition', '')}")
+                    lines.append(f"- 条件买点：{primary['price']:.2f}（{primary['type']}）{primary.get('condition', '')}")
                 sl = ee.get("stop_loss", {})
                 if sl:
                     lines.append(f"- 止损：{sl.get('price', '-')}（{sl.get('method', '-')}）")
@@ -161,12 +195,43 @@ def render_markdown(result: PipelineResult) -> str:
                         pass
             lines.append("")
     else:
-        lines += ["## 三、候选股池", "", "*当前扫描无候选股（情绪冰点或无符合趋势的标的）*", ""]
+        lines += ["## 三、正式推荐", "", "*无。当前没有标的通过完整证据链与条件买点审计。*", ""]
+
+    # 观察池单列，且不展示仓位、止盈止损或“主买点”等可被误解为交易指令的字段。
+    if watchlist:
+        lines += [
+            "## 四、观察池（非推荐）",
+            "",
+            "> 以下标的存在待确认条件或证据缺口，仅供跟踪。",
+            "",
+            "| 代码 | 名称 | 策略/板块 | 现价 | 涨跌% | RPS | 观察原因 |",
+            "|------|------|-----------|------|-------|-----|---------|",
+        ]
+        for item in watchlist[:20]:
+            evidence_item = item.get("candidate_evidence") or {}
+            strategy = evidence_item.get("strategy") or {}
+            decision = evidence_item.get("decision") or item.get("decision") or {}
+            reason = (
+                item.get("watch_reason")
+                or decision.get("reason")
+                or "证据链尚未满足正式推荐条件"
+            )
+            strategy_label = strategy.get("strategy_name") or item.get("board") or "观察池"
+            lines.append(
+                f"| {item.get('code', '')} | {item.get('name', '')} | {strategy_label} | "
+                f"{item.get('close', '-')} | {item.get('pct_change', '-')} | "
+                f"{float(item.get('rps') or 0):.0f} | {reason} |"
+            )
+        if len(watchlist) > 20:
+            lines += ["", f"*观察池共 {len(watchlist)} 只，此处仅展示前 20 只；完整结果见 JSON 报告。*"]
+        lines.append("")
+    else:
+        lines += ["## 四、观察池（非推荐）", "", "*无。*", ""]
 
     # 四、新闻多空证据
     evidence = (result.news or {}).get("evidence")
     if evidence:
-        lines += ["## 四、新闻多空证据（板块驱动）", ""]
+        lines += ["## 五、新闻多空证据（板块驱动）", ""]
         top_bullish = evidence.get("top_bullish_themes") or []
         top_bearish = evidence.get("top_bearish_themes") or []
         risks = evidence.get("risk_events") or []
@@ -190,8 +255,13 @@ def render_markdown(result: PipelineResult) -> str:
         cand_evidence = evidence.get("candidate_evidence") or {}
         if cand_evidence:
             lines += ["### 个股新闻审计", ""]
-            for c in result.candidates:
+            news_display_items = formal_recommendations + watchlist[:20]
+            seen_news_codes: set[str] = set()
+            for c in news_display_items:
                 code = c.get("code")
+                if not code or code in seen_news_codes:
+                    continue
+                seen_news_codes.add(code)
                 ev = cand_evidence.get(code)
                 if not ev:
                     continue
@@ -204,14 +274,21 @@ def render_markdown(result: PipelineResult) -> str:
 
     # 五、被剔除的
     if result.rejected:
-        lines += ["## 五、被护栏剔除（参考）", "",
+        lines += ["## 六、决策拒绝", "",
                   "| 代码 | 名称 | 剔除原因 |", "|------|------|---------|"]
         for r in result.rejected[:15]:
-            lines.append(f"| {r['code']} | {r['name']} | {r['reason']} |")
+            reason = (
+                r.get("reason")
+                or r.get("reject_reason")
+                or r.get("watch_reason")
+                or ((r.get("decision") or {}).get("reason") if isinstance(r.get("decision"), dict) else None)
+                or "未提供原因"
+            )
+            lines.append(f"| {r.get('code', '')} | {r.get('name', '')} | {reason} |")
         lines.append("")
 
     # 六、姿态总结
-    lines += ["## 六、操作建议", "", f"{result.posture_advice}", ""]
+    lines += ["## 七、操作建议", "", f"{result.posture_advice}", ""]
     if result.warnings:
         lines += ["### 提示", ""]
         for w in result.warnings:

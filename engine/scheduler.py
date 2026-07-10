@@ -22,7 +22,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import sys
 import time
 import traceback
@@ -62,6 +61,7 @@ class DailyScheduler:
         skip_notify: bool = False,
         dry_run: bool = False,
         workers: int = 10,
+        force_rps_rebuild: bool = False,
         status_dir: str | Path = _DEFAULT_STATUS_DIR,
     ) -> None:
         self.cfg = cfg
@@ -71,6 +71,7 @@ class DailyScheduler:
         self.skip_notify = skip_notify
         self.dry_run = dry_run
         self.workers = workers
+        self.force_rps_rebuild = force_rps_rebuild
         self.status_dir = Path(status_dir)
         self.status_dir.mkdir(parents=True, exist_ok=True)
         self.results: list[StepResult] = []
@@ -106,11 +107,41 @@ class DailyScheduler:
 
     def _step_rps_build(self) -> dict[str, Any]:
         from . import rps as rps_mod
+        db_path = self.cfg.get("output", {}).get("db_path", "data/pangu.db")
+        existing = rps_mod.load_rps_map(self.date, db_path)
+        if existing and not self.force_rps_rebuild:
+            snapshot_dir = Path(self.cfg.get("data", {}).get("snapshot_dir", "data/snapshots"))
+            ymd = datetime.strptime(self.date, "%Y%m%d").strftime("%Y-%m-%d")
+            spot_path = snapshot_dir / ymd / "all_spot.parquet"
+            if spot_path.exists():
+                try:
+                    import pandas as pd
+                    expected = len(pd.read_parquet(spot_path, columns=None))
+                except Exception:  # noqa: BLE001
+                    expected = 0
+                min_coverage = float(
+                    (self.cfg.get("scheduler") or {}).get("rps_reuse_min_coverage", 0.90)
+                )
+                coverage = len(existing) / expected if expected > 0 else 0.0
+                if coverage >= min_coverage:
+                    logger.info(
+                        "[scheduler] 复用当日 RPS：%d/%d（覆盖率 %.1f%%）",
+                        len(existing), expected, coverage * 100,
+                    )
+                    return {
+                        "date": self.date,
+                        "total": expected,
+                        "ok": len(existing),
+                        "fail": max(0, expected - len(existing)),
+                        "elapsed": 0.0,
+                        "reused": True,
+                        "coverage": round(coverage, 4),
+                    }
         dl = build_data_loader(self.cfg)
         return rps_mod.compute_all_rps(
             dl,
             date=self.date,
-            db_path=self.cfg.get("output", {}).get("db_path", "data/pangu.db"),
+            db_path=db_path,
             workers=self.workers,
         )
 
@@ -119,33 +150,20 @@ class DailyScheduler:
         snapshot_dir = self.cfg.get("data", {}).get("snapshot_dir", "data/snapshots")
         builder = SnapshotBuilder(dl, snapshot_dir=snapshot_dir)
         result = builder.build(self.date)
-        self.snapshot_built = bool(result.paths)
+        self.snapshot_built = int(result.rows.get("all_spot") or 0) > 0
+        if not self.snapshot_built:
+            raise RuntimeError("关键快照 all_spot 为空，禁止生成正式报告")
         return result.to_dict()
 
     def _step_scan(self) -> dict[str, Any]:
-        # 完整盘后链路且快照已生成时，scan 阶段进入严格 snapshot 模式，
-        # 避免盘后数据源降级导致实时接口反复重试。
-        prev_mode = os.environ.get("PANGU_DATA_MODE")
-        prev_date = os.environ.get("PANGU_DATA_DATE")
-        if self.snapshot_built and not self.force_degraded:
-            os.environ["PANGU_DATA_MODE"] = "snapshot"
-            os.environ["PANGU_DATA_DATE"] = self.date
-            logger.info("[scheduler] scan 进入 snapshot 模式，日期 %s", self.date)
-        try:
-            pipe = self._build_pipeline()
-            result = pipe.run(self.date)
-            data = json.loads(result.to_json())
-            self.pipeline_result = data
-            return {"date": result.date, "candidates": len(result.candidates), "warnings": result.warnings}
-        finally:
-            if prev_mode is None:
-                os.environ.pop("PANGU_DATA_MODE", None)
-            else:
-                os.environ["PANGU_DATA_MODE"] = prev_mode
-            if prev_date is None:
-                os.environ.pop("PANGU_DATA_DATE", None)
-            else:
-                os.environ["PANGU_DATA_DATE"] = prev_date
+        # SnapshotBuilder 只保存全市场快照，不保存逐股日 K。强制 snapshot 模式会让
+        # daily_kline 全部缺失并误杀所有候选，因此完整调度默认尊重 live 模式；用户
+        # 显式设置 PANGU_DATA_MODE=snapshot 时仍由 DataLoader 严格执行该语义。
+        pipe = self._build_pipeline()
+        result = pipe.run(self.date)
+        data = json.loads(result.to_json())
+        self.pipeline_result = data
+        return {"date": result.date, "candidates": len(result.candidates), "warnings": result.warnings}
 
     def _step_report(self) -> dict[str, Any]:
         if self.dry_run:
@@ -153,32 +171,9 @@ class DailyScheduler:
         if self.pipeline_result is None:
             # report 依赖 scan，如果 scan 被跳过或失败则无法生成
             raise RuntimeError("无选股结果，无法生成报告")
-        # 从 dict 重建 PipelineResult 以复用 save_report
+        # 从 dict 重建 PipelineResult 以复用 save_report，并保留所有新证据字段。
         from .pipeline import PipelineResult
-        result = PipelineResult(
-            date=self.pipeline_result["date"],
-            sentiment=self.pipeline_result["sentiment"],
-            boards=self.pipeline_result["boards"],
-            candidates=self.pipeline_result["candidates"],
-            rejected=self.pipeline_result["rejected"],
-            posture_advice=self.pipeline_result["posture_advice"],
-            warnings=self.pipeline_result.get("warnings", []),
-            news=self.pipeline_result.get("news", {}),
-            market_modules=self.pipeline_result.get("market_modules", {}),
-            source_status=self.pipeline_result.get("source_status", self.pipeline_result.get("source_state", {})),
-            xuanwu_pool=self.pipeline_result.get("xuanwu_pool", {}),
-            recommendation_allowed=self.pipeline_result.get("recommendation_allowed", False),
-            historical_mode=self.pipeline_result.get("historical_mode", "live"),
-            data_quality=self.pipeline_result.get("data_quality", "unknown"),
-            tradable=self.pipeline_result.get("tradable", False),
-            no_trade_reason=self.pipeline_result.get("no_trade_reason", ""),
-            block_reasons=self.pipeline_result.get("block_reasons", []),
-            candidate_evidence=self.pipeline_result.get("candidate_evidence", {}),
-        )
-        result.watchlist = self.pipeline_result.get("watchlist", [])
-        result.final_recommendations = self.pipeline_result.get("final_recommendations", [])
-        result.strategy_signals = self.pipeline_result.get("strategy_signals", {})
-        result.strategy_candidates = self.pipeline_result.get("strategy_candidates", [])
+        result = PipelineResult.from_dict(self.pipeline_result)
         report_dir = self.cfg.get("output", {}).get("report_dir", "data/reports")
         self.report_path = save_report(result, report_dir, force_degraded=self.force_degraded)
         return {"report_path": str(self.report_path), "degraded": self.force_degraded or result.data_quality != "ok"}
@@ -239,13 +234,20 @@ class DailyScheduler:
             self._step_snapshot_build,
             skip=self.skip_snapshot or self.dry_run,
         ))
+        if any(r.status == "failed" for r in self.results):
+            self.force_degraded = True
+            logger.warning("[scheduler] RPS/快照步骤失败，后续报告强制写入 degraded/")
 
         # 3. 选股
-        self.results.append(self._run_step(
+        scan_step = self._run_step(
             "scan",
             self._step_scan,
             skip=self.dry_run,
-        ))
+        )
+        self.results.append(scan_step)
+        if scan_step.status == "failed":
+            self.force_degraded = True
+            self.pipeline_result = self._diagnostic_pipeline_result(scan_step.error)
 
         # 4. 报告
         self.results.append(self._run_step(
@@ -303,6 +305,34 @@ class DailyScheduler:
         self._save_status(summary)
         return summary
 
+    def _diagnostic_pipeline_result(self, error: str) -> dict[str, Any]:
+        """构造只包含真实失败信息的诊断结果，绝不伪造候选或行情。"""
+        return {
+            "date": self.date,
+            "sentiment": {},
+            "boards": [],
+            "candidates": [],
+            "rejected": [],
+            "posture_advice": "扫描失败，本报告仅用于诊断，不构成交易建议。",
+            "warnings": [error],
+            "news": {},
+            "market_modules": {},
+            "source_status": {"pipeline": {"status": "failed", "reason": error}},
+            "xuanwu_pool": {},
+            "recommendation_allowed": False,
+            "historical_mode": "incomplete",
+            "watchlist": [],
+            "final_recommendations": [],
+            "strategy_signals": {},
+            "strategy_candidates": [],
+            "data_quality": "failed",
+            "tradable": False,
+            "no_trade_reason": error,
+            "block_reasons": [error],
+            "candidate_evidence": {},
+            "raw_candidate_count": 0,
+        }
+
     def _save_status(self, summary: dict[str, Any]) -> None:
         status_file = self.status_dir / f"{self.date}_status.json"
         try:
@@ -336,6 +366,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-notify", action="store_true", help="跳过通知")
     parser.add_argument("--dry-run", action="store_true", help="只检查配置与通知，不执行耗时取数")
     parser.add_argument("--workers", type=int, default=10, help="RPS 预计算并发数")
+    parser.add_argument("--force-rps-rebuild", action="store_true", help="忽略已有当日 RPS，强制重新计算")
     parser.add_argument("-v", "--verbose", action="store_true", help="调试日志")
     args = parser.parse_args(argv)
 
@@ -349,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         skip_notify=args.skip_notify,
         dry_run=args.dry_run,
         workers=args.workers,
+        force_rps_rebuild=args.force_rps_rebuild,
     )
     summary = scheduler.run()
     print(json.dumps(summary, ensure_ascii=False, indent=2))

@@ -398,6 +398,12 @@ class TrendPullbackPool(StrategyPool):
 
         rps_engine = RPSCalculator(self.dl, self.cfg)
         rps_map = rps_engine.rps_for_codes(codes, date)
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        codes = sorted(
+            codes,
+            key=lambda code: safe_float((rps_map.get(code) or {}).get("rps"), 0.0),
+            reverse=True,
+        )[:expensive_limit]
 
         signals: list[StrategySignal] = []
         for code in codes:
@@ -483,7 +489,14 @@ class OversoldReboundPool(StrategyPool):
 
         spot = spot.copy()
         spot["_code"] = self._code_series(spot).fillna("").astype(str).str.zfill(6)
-        codes = spot["_code"].unique()[:300]
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        # 超跌策略优先检查当日跌幅靠前标的，避免按代码顺序做数百次日 K 请求。
+        codes = (
+            spot.sort_values(pct_col, ascending=True)["_code"]
+            .drop_duplicates()
+            .head(expensive_limit)
+            .tolist()
+        )
         name_col = find_col(spot, ["名称", "name"])
         signals: list[StrategySignal] = []
         for code in codes:
@@ -561,7 +574,12 @@ class SmallQualityPool(StrategyPool):
 
         max_mv = self.cfg.get("small_quality", {}).get("max_circ_mv_yi", 100)
         min_turnover = self.cfg.get("small_quality", {}).get("min_turnover", 2.0)
-        candidates = spot[(spot["_mv"] <= max_mv * 1e8) & (spot["_turnover"] >= min_turnover)]
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        candidates = (
+            spot[(spot["_mv"] <= max_mv * 1e8) & (spot["_turnover"] >= min_turnover)]
+            .sort_values(["_turnover", "_mv"], ascending=[False, True])
+            .head(expensive_limit)
+        )
 
         signals: list[StrategySignal] = []
         for _, row in candidates.iterrows():
@@ -627,7 +645,12 @@ class DividendLowVolPool(StrategyPool):
         spot["_pct"] = pd.to_numeric(spot[pct_col], errors="coerce") if pct_col else pd.Series(0.0, index=spot.index)
 
         min_mv = cfg.get("min_mv_yi", 300)
-        candidates = spot[spot["_mv"] >= min_mv * 1e8]
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        candidates = (
+            spot[spot["_mv"] >= min_mv * 1e8]
+            .sort_values("_mv", ascending=False)
+            .head(expensive_limit)
+        )
 
         signals: list[StrategySignal] = []
         for _, row in candidates.iterrows():

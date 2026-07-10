@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -66,6 +67,8 @@ class QuantGuard:
         fcfg = self.cfg.get("financial_risk", {})
         self.exclude_loss = fcfg.get("exclude_loss", True)
         self.debt_max = fcfg.get("debt_ratio_max", 0.80)
+        self.financial_check_limit = max(0, int(self.cfg.get("financial_check_limit", 40)))
+        self.workers = max(1, int(self.cfg.get("workers", 8)))
 
     # ------------------------------------------------------------------ #
     def filter(self, candidates: list[StockCandidate], date: Optional[str] = None) -> GuardResult:
@@ -78,8 +81,19 @@ class QuantGuard:
             code_col = _find_col(spot, ["代码"]) or spot.columns[1]
             spot_map = {str(r[code_col]).strip(): r for _, r in spot.iterrows()}
 
-        for c in candidates:
-            check = self._check(c, spot_map.get(c.code), date=date)
+        def _evaluate(args: tuple[int, StockCandidate]):
+            index, candidate = args
+            return candidate, self._check(
+                candidate,
+                spot_map.get(candidate.code),
+                date=date,
+                check_financial=index < self.financial_check_limit,
+            )
+
+        with ThreadPoolExecutor(max_workers=min(self.workers, max(1, len(candidates)))) as pool:
+            checks = list(pool.map(_evaluate, enumerate(candidates)))
+
+        for c, check in checks:
             reason = None
             watch_reason = None
             if isinstance(check, tuple):
@@ -104,7 +118,13 @@ class QuantGuard:
         return res
 
     # ------------------------------------------------------------------ #
-    def _check(self, c: StockCandidate, spot_row: Optional[pd.Series], date: Optional[str] = None) -> Optional[str] | tuple[Optional[str], Optional[str]]:
+    def _check(
+        self,
+        c: StockCandidate,
+        spot_row: Optional[pd.Series],
+        date: Optional[str] = None,
+        check_financial: bool = True,
+    ) -> Optional[str] | tuple[Optional[str], Optional[str]]:
         """返回剔除原因或 (剔除原因, 观察原因)。
 
         - 返回字符串：硬剔除原因。
@@ -162,10 +182,12 @@ class QuantGuard:
                 return f"次新股（上市不足 {self.exclude_new_days} 日）"
 
         # 5. 财务风险（慢，放最后；逐只取）
-        if self.exclude_loss or self.debt_max < 1.0:
+        if check_financial and (self.exclude_loss or self.debt_max < 1.0):
             fin_reason = self._check_financial(c.code)
             if fin_reason:
                 return fin_reason
+        elif self.exclude_loss or self.debt_max < 1.0:
+            watch_reasons.append("财务排雷未覆盖，仅观察")
 
         if watch_reasons:
             return None, ";".join(watch_reasons)

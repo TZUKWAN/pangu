@@ -72,6 +72,27 @@ def test_news_evidence_bearish_rejects() -> None:
     assert any(log["gate"] == "news_evidence" for log in res.gate_log)
 
 
+def test_news_evidence_bearish_without_risk_goes_watch() -> None:
+    """一般利空（无重大风险事件）降级到观察池，而不是 rejected。"""
+    gate = _gate()
+    item = {
+        "code": "000001", "name": "测试", "entry_exit": _entry_exit(),
+        "anti_chase": {"status": "ok"},
+        "entry_plan": {"is_chasing": False},
+        "news_evidence": {
+            "sentiment_label": "bearish",
+            "verdict_reason": "板块短期分歧",
+            "risk_events": [],
+        },
+    }
+    pooled = {"趋势突破": [_signal()]}
+    cand_map = {"000001": _candidate()}
+    res = gate.pass_gate(pooled, cand_map, candidates=[item])
+    assert not any(i["code"] == "000001" for i in res.rejected)
+    assert any(i["code"] == "000001" for i in res.watchlist)
+    assert any("无重大风险" in log.get("reason", "") for log in res.gate_log if log.get("gate") == "news_evidence")
+
+
 def test_news_evidence_mixed_with_risk_watch() -> None:
     gate = _gate()
     item = {
@@ -207,3 +228,89 @@ def test_fund_flow_unavailable_blocks_fund_flow_strategy() -> None:
 
     assert res.final_recommendations == []
     assert any("策略强依赖资金流" in i.get("watch_reason", "") for i in res.watchlist)
+
+
+def test_gate_consumes_evidence_map() -> None:
+    """Gate 优先从 evidence_map 读取审计字段，而不是 item 中的旧字段。"""
+    gate = _gate()
+    item = {
+        "code": "000001", "name": "测试", "entry_exit": _entry_exit(),
+        "anti_chase": {"status": "ok"},
+        "entry_plan": {"is_chasing": False},
+        # item 里是 bullish，但 evidence_map 里是 bearish 且带风险
+        "news_evidence": {"sentiment_label": "bullish", "support_count": 2},
+    }
+    evidence_map = {
+        "000001": {
+            "data_quality": {"overall": "ok"},
+            "volume_audit": {"status": "ok", "price_volume_pattern": "pullback_shrink"},
+            "news_evidence": {
+                "sentiment_label": "bearish",
+                "verdict_reason": "业绩变脸",
+                "risk_events": ["业绩变脸"],
+            },
+            "anti_chase": {"status": "ok"},
+            "entry_plan": {"is_chasing": False},
+        }
+    }
+    pooled = {"趋势突破": [_signal()]}
+    cand_map = {"000001": _candidate()}
+    res = gate.pass_gate(pooled, cand_map, candidates=[item], evidence_map=evidence_map)
+    assert any(i["code"] == "000001" for i in res.rejected)
+    assert any("重大风险" in log.get("reason", "") for log in res.gate_log if log.get("gate") == "news_evidence")
+
+
+def test_gate_rejects_code_missing_candidate_evidence() -> None:
+    gate = _gate()
+    res = gate.pass_gate(
+        {"趋势突破": [_signal()]},
+        {"000001": _candidate()},
+        candidates=[{"code": "000001", "entry_exit": _entry_exit()}],
+        evidence_map={},
+    )
+    assert res.final_recommendations == []
+    assert any(i["code"] == "000001" for i in res.rejected)
+    assert any(log.get("gate") == "candidate_evidence" for log in res.gate_log)
+
+
+def test_degraded_evidence_cannot_enter_final() -> None:
+    gate = _gate()
+    evidence_map = {
+        "000001": {
+            "data_quality": {"overall": "degraded"},
+            "volume_audit": {"status": "ok", "price_volume_pattern": "pullback_shrink"},
+            "anti_chase": {"status": "ok"},
+            "entry_plan": {"is_chasing": False, "trigger_condition": "回踩确认"},
+            "news_evidence": {"sentiment_label": "bullish", "support_count": 2},
+        }
+    }
+    res = gate.pass_gate(
+        {"趋势突破": [_signal()]},
+        {"000001": _candidate()},
+        candidates=[{"code": "000001", "entry_exit": _entry_exit()}],
+        evidence_map=evidence_map,
+    )
+    assert res.final_recommendations == []
+    assert any("数据质量 degraded" in i.get("watch_reason", "") for i in res.watchlist)
+
+
+def test_quant_guard_watch_cannot_enter_final() -> None:
+    candidate = _candidate()
+    gate = RecommendationGate(
+        dl=MagicMock(),
+        guard_result=GuardResult(kept=[], watch=[candidate], rejected=[]),
+        market_phase={"market_phase": "震荡", "allowed_strategies": ["趋势突破"], "forbidden_strategies": []},
+        cfg={},
+        recommendation_allowed=True,
+    )
+    item = {
+        "code": "000001",
+        "entry_exit": _entry_exit(),
+        "volume_audit": {"status": "ok", "price_volume_pattern": "pullback_shrink"},
+        "anti_chase": {"status": "ok"},
+        "entry_plan": {"is_chasing": False},
+        "news_evidence": {"sentiment_label": "bullish", "support_count": 2},
+    }
+    res = gate.pass_gate({"趋势突破": [_signal()]}, {"000001": candidate}, candidates=[item])
+    assert res.final_recommendations == []
+    assert any("QuantGuard" in i.get("watch_reason", "") for i in res.watchlist)

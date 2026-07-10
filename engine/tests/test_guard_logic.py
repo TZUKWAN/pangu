@@ -2,7 +2,9 @@
 
 import pandas as pd
 import pytest
+from unittest.mock import MagicMock
 
+from engine.anti_chase_guard import AntiChaseGuard
 from engine.data_loader import DataLoader
 from engine.quant_guard import QuantGuard, GuardResult
 from engine.trend_scanner import StockCandidate
@@ -100,3 +102,40 @@ def test_watch_on_missing_valuation():
     assert len(r.kept) == 0
     assert len(r.watch) == 1
     assert any("估值数据缺失" in flag for flag in r.watch[0].risk_flags)
+
+
+def test_guard_uncovered_financial_candidates_are_watch_only():
+    spot = pd.DataFrame({
+        "代码": ["000001", "000002"], "名称": ["A", "B"],
+        "市盈率-动态": [20, 20], "市净率": [2, 2],
+    })
+    guard = QuantGuard(
+        StubDL(spot),
+        {
+            "exclude_new_days": 0,
+            "financial_check_limit": 1,
+            "workers": 2,
+            "financial_risk": {"exclude_loss": True, "debt_ratio_max": 0.9},
+        },
+    )
+    result = guard.filter([make_candidate(code="000001"), make_candidate(code="000002")])
+    assert len(result.kept) == 1
+    assert len(result.watch) == 1
+    assert any("财务排雷未覆盖" in flag for flag in result.watch[0].risk_flags)
+
+
+def test_anti_chase_reuses_technical_kline_without_network_call():
+    dl = MagicMock()
+    rows = [
+        {"close": 10 + i * 0.1, "volume": 1000 - i * 10}
+        for i in range(10)
+    ]
+    item = {
+        "code": "000001",
+        "close": 10.9,
+        "pct_change": 1.0,
+        "technical": {"ma": {"ma5": 10.7, "ma20": 10.0}, "kline": rows},
+    }
+    AntiChaseGuard(dl, {}).guard([item], date="20260710")
+    dl.daily_kline.assert_not_called()
+    assert item["anti_chase"]["status"] in {"ok", "watch", "blocked"}

@@ -21,7 +21,7 @@ from engine.strategy_pools import (
     ThemeLeaderPool,
     TrendPullbackPool,
 )
-from engine.trend_scanner import StockCandidate
+from engine.trend_scanner import RPSCalculator, StockCandidate
 
 
 class DummyDataLoader:
@@ -89,6 +89,16 @@ class TestMarketPhase(unittest.TestCase):
 
 
 class TestStrategyPools(unittest.TestCase):
+    def test_rps_calculator_uses_precomputed_map_without_kline_calls(self):
+        dl = DummyDataLoader()
+        dl.daily_kline = MagicMock(side_effect=AssertionError("真实 RPS 命中时不应再拉日 K"))
+        with patch("engine.rps.load_rps_map", return_value={"000001": 91.5}):
+            result = RPSCalculator(dl, {"output": {"db_path": "unused.db"}}).rps_for_codes(
+                ["000001"], "20260710"
+            )
+        self.assertEqual(result["000001"], {"rps": 91.5, "mode": "real"})
+        dl.daily_kline.assert_not_called()
+
     def test_theme_leader_pool(self):
         dl = DummyDataLoader()
         dl._limit_up = pd.DataFrame({

@@ -127,7 +127,9 @@ class TrendScanner:
         self.mv_min = scfg.get("min_circ_mv_yi", 30)
         self.mv_max = scfg.get("max_circ_mv_yi", 2000)
         self.max_per_board = scfg.get("max_per_board", 80)
-        self.fallback_top_n = scfg.get("fallback_top_n", 400)
+        configured_fallback = int(scfg.get("fallback_top_n", 400))
+        runtime_cap = int(self.cfg.get("market_scan_cap", 200))
+        self.fallback_top_n = min(configured_fallback, runtime_cap)
         self.broad_pool_target = scfg.get("broad_pool_target", 120)
         self.broad_pct_min = scfg.get("broad_pct_min", -2.0)
         self.broad_rps_hard_min = scfg.get("broad_rps_hard_min", 35)
@@ -834,7 +836,13 @@ class TrendScanner:
             if len(valid_mv) > len(df) * 0.5:  # 多数票有市值才过滤
                 df = df[(df["_mv"] >= self.mv_min * 1e8) & (df["_mv"] <= self.mv_max * 1e8)]
         # 按涨幅降序取 Top N（控制耗时）
-        df = df.sort_values("_pct", ascending=False).head(self.fallback_top_n)
+        if self.rps_map:
+            df["_rps"] = df["_code"].map(self.rps_map)
+            df = df[df["_rps"].notna() & (df["_rps"] >= self.rps_hard_min)]
+            df = df.sort_values(["_rps", "_pct"], ascending=[False, False])
+        else:
+            df = df.sort_values("_pct", ascending=False)
+        df = df.head(self.fallback_top_n)
         df = self._enrich_spot_with_tencent(df, code_col="_code")
 
         cands: list[StockCandidate] = []
@@ -1084,11 +1092,26 @@ class RPSCalculator:
         """返回 {code: {"rps": float, "mode": str}}。"""
         date = date or pd.Timestamp.now().strftime("%Y%m%d")
         out: dict[str, dict[str, Any]] = {}
+        if not self.rps_map:
+            try:
+                from .rps import load_rps_map
+                db_path = (self.cfg.get("output") or {}).get("db_path", "data/pangu.db")
+                self.rps_map = load_rps_map(date, db_path)
+                self.rps_date = date
+            except Exception:  # noqa: BLE001
+                self.rps_map = {}
+        allow_approx = bool(((self.cfg.get("trend") or {}).get("rps") or {}).get("allow_approx", False))
         try:
             spot = self.dl.all_spot()
         except Exception:  # noqa: BLE001
             spot = pd.DataFrame()
         for code in codes:
+            if code in self.rps_map:
+                out[code] = {"rps": float(self.rps_map[code]), "mode": "real"}
+                continue
+            if not allow_approx:
+                out[code] = {"rps": 0.0, "mode": "unavailable"}
+                continue
             try:
                 k = self.dl.daily_kline(code, days=30, date=date)
                 closes = pd.to_numeric(k["close"], errors="coerce").dropna() if not k.empty else pd.Series(dtype=float)

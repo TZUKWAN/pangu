@@ -21,8 +21,7 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import TimeoutError as FuturesTimeoutError
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -296,43 +295,62 @@ class P0FactorCollector:
             recorder.skipped("skipped because structured_data total budget was exhausted")
             return
         max_workers = max(1, min(self.workers, len(codes)))
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = {pool.submit(fn, code): code for code in codes}
+        pool = ThreadPoolExecutor(max_workers=max_workers)
+        code_iter = iter(codes)
+        futures: dict[Any, str] = {}
+
+        def _submit_next() -> bool:
+            if self._time_left() <= 0:
+                return False
             try:
-                for future in as_completed(futures, timeout=max(1.0, self._time_left())):
-                    if self._time_left() <= 0:
-                        recorder.skipped("stopped early because structured_data total budget was exhausted")
-                        for pending in futures:
-                            pending.cancel()
-                        break
-                    code = futures[future]
+                code = next(code_iter)
+            except StopIteration:
+                return False
+            futures[pool.submit(fn, code)] = code
+            return True
+
+        for _ in range(max_workers):
+            if not _submit_next():
+                break
+
+        try:
+            while futures and self._time_left() > 0:
+                done, _ = wait(
+                    tuple(futures),
+                    timeout=min(1.0, max(0.1, self._time_left())),
+                    return_when=FIRST_COMPLETED,
+                )
+                if not done:
+                    continue
+                for future in done:
+                    code = futures.pop(future)
                     try:
                         value = future.result()
                     except Exception as e:  # noqa: BLE001
-                        # Retry once on failure
-                        try:
-                            value = fn(code)
-                        except Exception:  # noqa: BLE001
-                            recorder.warn(f"{code}: {e}")
-                            factors[code]["source_coverage"][name] = "error"
-                            continue
-                    if value:
-                        factors[code][name] = value
-                        src = value.get("source", "")
-                        if isinstance(src, str) and ("fallback" in src or "degraded" in src):
-                            factors[code]["source_coverage"][name] = "degraded"
-                            recorder.degraded_ok(1)
-                        else:
-                            factors[code]["source_coverage"][name] = "ok"
-                            recorder.ok(1)
+                        recorder.warn(f"{code}: {e}")
+                        factors[code]["source_coverage"][name] = "error"
                     else:
-                        factors[code]["source_coverage"][name] = "empty"
-            except FuturesTimeoutError:
+                        if value:
+                            factors[code][name] = value
+                            src = value.get("source", "")
+                            if isinstance(src, str) and ("fallback" in src or "degraded" in src):
+                                factors[code]["source_coverage"][name] = "degraded"
+                                recorder.degraded_ok(1)
+                            else:
+                                factors[code]["source_coverage"][name] = "ok"
+                                recorder.ok(1)
+                        else:
+                            factors[code]["source_coverage"][name] = "empty"
+                    _submit_next()
+
+            if futures:
                 recorder.skipped("stopped early because structured_data total budget was exhausted")
                 for future, code in futures.items():
-                    if not future.done():
-                        future.cancel()
+                    if future.cancel():
                         factors[code]["source_coverage"][name] = "skipped"
+        finally:
+            # 只等待最多 workers 个已经在途的、带请求超时的任务，不等待整批队列。
+            pool.shutdown(wait=True, cancel_futures=True)
 
     # ── HTTP helpers ─────────────────────────────────────────────
     def _get_json(

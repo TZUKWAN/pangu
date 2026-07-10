@@ -8,8 +8,21 @@ from engine.trend_scanner import (
     _zscore,
     _find_col,
     StockCandidate,
+    TrendScanner,
     TrendResult,
 )
+
+
+def test_market_scan_cap_limits_legacy_fallback_override(tmp_path):
+    scanner = TrendScanner(
+        object(),
+        {
+            "market_scan_cap": 200,
+            "history_dir": str(tmp_path),
+            "stock": {"fallback_top_n": 600},
+        },
+    )
+    assert scanner.fallback_top_n == 200
 
 
 def test_ma_basic():
@@ -111,7 +124,6 @@ class FakeBoardDataLoader:
 
 def test_rank_boards_with_low_persistence_penalty(tmp_path):
     """板块轮动持续性低时，板块得分应被扣分。"""
-    from engine.trend_scanner import TrendScanner
     from engine.market_structure import HistoryKeeper
 
     concept = pd.DataFrame({

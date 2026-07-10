@@ -37,6 +37,7 @@ from ..agent.debate import get_agent_prompts
 from ..data_loader import find_col, safe_float
 from ..market_phase import MarketPhaseAnalyzer
 from ..pipeline import Pipeline
+from ..report import save_report
 from ..strategy_pools import run_all_pools
 from ..scheduler import DailyScheduler
 
@@ -458,7 +459,9 @@ def _report_status(data: dict[str, Any]) -> dict[str, Any]:
     block_reasons = list(data.get("block_reasons") or [])
     final_count = len(data.get("final_recommendations") or [])
     watch_count = len(data.get("watchlist") or [])
-    raw_candidate_count = len(data.get("candidates") or [])
+    raw_candidate_count = data.get("raw_candidate_count")
+    if not isinstance(raw_candidate_count, int):
+        raw_candidate_count = len(data.get("candidates") or [])
 
     if data_quality in ("failed", "degraded"):
         freshness_status = "degraded"
@@ -1043,7 +1046,8 @@ def _enrich_response(data: dict[str, Any]) -> dict[str, Any]:
     enriched["block_reasons"] = list(enriched.get("block_reasons") or enriched["report_status"].get("block_reasons") or [])
     enriched["final_count"] = len(enriched.get("final_recommendations") or [])
     enriched["watch_count"] = len(enriched.get("watchlist") or [])
-    enriched["raw_candidate_count"] = len(enriched.get("candidates") or [])
+    if not isinstance(enriched.get("raw_candidate_count"), int):
+        enriched["raw_candidate_count"] = len(enriched.get("candidates") or [])
     enriched["daily_loop"] = _daily_loop(enriched, runtime, enriched["source_status"])
     enriched["sentiment_report"] = _sentiment_report(enriched)
     enriched["latest_report_date"] = enriched["report_status"].get("latest_report_date")
@@ -1092,8 +1096,13 @@ async def api_latest(date: Optional[str] = Query(None, description="YYYYMMDD，�
             p = _REPORT_DIR / f"{date}{ext}"
             if p.exists():
                 try:
-                    return _enrich_response(json.loads(p.read_text(encoding="utf-8")))
+                    data = json.loads(p.read_text(encoding="utf-8"))
+                    if not _report_is_complete(data):
+                        raise HTTPException(404, f"{date} 没有 data_quality=ok 的正式报告")
+                    return _enrich_response(data)
                 except Exception as e:  # noqa: BLE001
+                    if isinstance(e, HTTPException):
+                        raise
                     raise HTTPException(500, f"报告解析失败: {e}")
         raise HTTPException(404, f"无 {date} 的历史报告，请先扫描")
 
@@ -1267,21 +1276,26 @@ async def api_scan(date: Optional[str] = Query(None)):
             state.log("调用 Pipeline.run()，取数+选股中（约 1-3 分钟）...")
             result = pipe.run(date)
             state.log("Pipeline 完成，序列化结果")
+            # P0：统一报告路由。只有 data_quality == ok 才更新全局 latest。
+            is_degraded = result.data_quality in ("failed", "degraded")
+            try:
+                report_dir = (load_config().get("output") or {}).get("report_dir", "data/reports")
+                save_report(result, report_dir, force_degraded=is_degraded)
+                state.log(f"报告已保存：{'degraded/' if is_degraded else ''}{result.date}")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("报告存盘失败: %s", e)
+                state.log(f"报告存盘失败: {e}")
             data = json.loads(result.to_json())
             data = _enrich_response(data)
             state.result = data
             state.status = "done"
-            state.log(f"完成：候选 {len(data.get('candidates', []))} 只")
-            # 更新内存缓存
-            _latest_result = data
-            # 存盘：P0 完整报告作为默认产物，同时保留 {date}.json 兼容旧路径
-            try:
-                _REPORT_DIR.mkdir(parents=True, exist_ok=True)
-                payload = json.dumps(data, ensure_ascii=False, indent=2)
-                (_REPORT_DIR / f"{result.date}_p0.json").write_text(payload, encoding="utf-8")
-                (_REPORT_DIR / f"{result.date}.json").write_text(payload, encoding="utf-8")
-            except Exception as e:  # noqa: BLE001
-                logger.warning("报告存盘失败: %s", e)
+            state.log(f"完成：候选 {len(data.get('candidates', []))} 只，数据质量 {result.data_quality}")
+            # 只有正式 ok 报告才刷新全局内存 latest，避免 degraded 扫描劫持 latest
+            if result.data_quality == "ok":
+                _latest_result = data
+                state.log("已更新全局最新报告缓存")
+            else:
+                state.log(f"数据质量 {result.data_quality}，不更新全局 latest，可在 task.result 查看诊断报告")
             try:
                 from ..recommendation_journal import RecommendationJournal
                 cfg = load_config()
@@ -1967,31 +1981,51 @@ def _sse(event: str, data: str) -> str:
 
 
 def _report_is_complete(data: Any) -> bool:
-    """判断报告是否为受控完整产物（非外部/中间残件）。
-
-    校验：候选非空且多数含 ``recommend.recommend_score``；存在结构化数据状态
-    （``source_status.structured_data`` 或 ``source_state.structured_data``）。
-    用于跳过外部手写/旧的 ``{date}_p0.json`` 劫持更新的正式报告。
-    """
+    """判断报告是否为明确 ``data_quality=ok`` 的新契约正式产物。"""
     if not isinstance(data, dict):
         return False
-    cands = data.get("candidates")
-    if not isinstance(cands, list) or not cands:
+    date = str(data.get("date") or "")
+    if len(date) != 8 or not date.isdigit() or data.get("data_quality") != "ok":
         return False
-    scored = sum(
-        1 for c in cands
-        if isinstance(c, dict) and isinstance((c.get("recommend") or {}).get("recommend_score"), (int, float))
-    )
-    if scored < max(1, len(cands) // 2):
+    if not isinstance(data.get("tradable"), bool):
         return False
-    src_status = data.get("source_status")
-    src_state = data.get("source_state")
-    has_struct = (
-        isinstance(src_status, dict) and "structured_data" in src_status
-    ) or (
-        isinstance(src_state, dict) and isinstance(src_state.get("structured_data"), dict)
-    )
-    return has_struct
+    if not isinstance(data.get("source_status"), dict):
+        return False
+
+    list_fields = ("candidates", "final_recommendations", "watchlist", "rejected")
+    if any(not isinstance(data.get(key), list) for key in list_fields):
+        return False
+    evidence = data.get("candidate_evidence")
+    if not isinstance(evidence, dict):
+        return False
+
+    cands = data["candidates"]
+    if cands:
+        scored = sum(
+            1 for c in cands
+            if isinstance(c, dict)
+            and isinstance((c.get("recommend") or {}).get("recommend_score"), (int, float))
+        )
+        if scored < max(1, len(cands) // 2):
+            return False
+
+    expected_counts = {
+        "final_count": len(data["final_recommendations"]),
+        "watch_count": len(data["watchlist"]),
+    }
+    if any(data.get(key) != expected for key, expected in expected_counts.items()):
+        return False
+    raw_count = data.get("raw_candidate_count")
+    if not isinstance(raw_count, int) or raw_count < len(cands):
+        return False
+
+    decided_codes = {
+        str(item.get("code") or "")
+        for key in list_fields
+        for item in data[key]
+        if isinstance(item, dict) and item.get("code")
+    }
+    return decided_codes.issubset(set(evidence))
 
 
 def _report_sort_key(p: Path) -> tuple:
