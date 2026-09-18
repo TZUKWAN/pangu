@@ -187,3 +187,74 @@ def test_multisource_empty_when_all_sources_fail(no_akshare, tmp_path, monkeypat
     )
     assert dl.all_spot().empty
     assert dl.daily_kline("000001").empty
+
+
+def test_multisource_all_spot_uses_memory_cache(no_akshare, tmp_path, monkeypatch):
+    """all_spot 命中内存缓存时不重复调用 SourceRegistry。"""
+    from engine.source_quality import assess_dataframe
+
+    calls = []
+
+    def fake_fetch(kind, context):
+        calls.append(kind)
+        df = pd.DataFrame({"代码": ["000001"], "名称": ["测试"], "最新价": [10.0]})
+        return assess_dataframe(df, source="fake", kind="all_spot")
+
+    dl = MultiSourceDataLoader(
+        cache_dir=tmp_path / "cache",
+        snapshot_dir=tmp_path / "snapshots",
+        retry_times=1,
+        backoff_seconds=0.0,
+    )
+    # mock 掉 registry.fetch，验证第二次走内存缓存
+    monkeypatch.setattr(dl.source_registry, "fetch", fake_fetch)
+
+    r1 = dl.all_spot()
+    r2 = dl.all_spot()
+    assert len(r1) == 1
+    assert len(r2) == 1
+    assert len(calls) == 1, "内存缓存应命中，registry.fetch 只调用一次"
+
+
+def test_multisource_daily_kline_uses_memory_cache(no_akshare, tmp_path, monkeypatch):
+    """daily_kline 命中内存缓存时不重复调用 SourceRegistry。"""
+    from engine.source_quality import assess_dataframe
+
+    calls = []
+
+    def fake_fetch(kind, context):
+        calls.append((kind, context.symbol))
+        df = pd.DataFrame({"日期": ["20250101"], "收盘": [10.0], "股票代码": [context.symbol]})
+        return assess_dataframe(df, source="fake", kind="daily_kline")
+
+    dl = MultiSourceDataLoader(
+        cache_dir=tmp_path / "cache",
+        snapshot_dir=tmp_path / "snapshots",
+        retry_times=1,
+        backoff_seconds=0.0,
+    )
+    monkeypatch.setattr(dl.source_registry, "fetch", fake_fetch)
+
+    r1 = dl.daily_kline("000001", days=60, date="20250115")
+    r2 = dl.daily_kline("000001", days=60, date="20250115")
+    assert len(r1) == 1
+    assert len(r2) == 1
+    assert len(calls) == 1, "内存缓存应命中"
+
+
+def test_multisource_snapshot_date_fallback_to_pipeline_date(no_akshare, tmp_path):
+    """未设置 PANGU_DATA_DATE 时，snapshot provider 应回退到 Pipeline 传入的 date。"""
+    from engine.sources import SourceContext
+
+    dl = MultiSourceDataLoader(
+        cache_dir=tmp_path / "cache",
+        snapshot_dir=tmp_path / "snapshots",
+        retry_times=1,
+        backoff_seconds=0.0,
+    )
+    dl._data_date = None
+    ctx = dl._source_context("daily_kline", symbol="000001", date="20250115")
+    assert ctx.data_date == "20250115", "data_date 应回退到传入 date"
+
+    ctx2 = dl._source_context("all_spot", date="20250115")
+    assert ctx2.data_date == "20250115", "all_spot 的 data_date 也应回退到传入 date"

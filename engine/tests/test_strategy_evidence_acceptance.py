@@ -13,6 +13,21 @@ class FakeDataLoader:
     pass
 
 
+def _exit_plan() -> dict:
+    rule_types = [
+        "hard_stop", "news_invalidation", "market_retreat", "theme_invalidation",
+        "trend_break", "first_target", "final_target", "trailing_stop", "time_stop",
+    ]
+    return {
+        "entry_price": 9.8, "initial_stop": 9.0,
+        "first_target": 10.8, "final_target": 11.6,
+        "trailing_reference": 10.2,
+        "max_holding_days": 3, "sentiment_exit_drop": 15.0,
+        "conservative_same_day_order": "stop_first",
+        "rules": [{"rule_type": name, "action": "exit_all", "condition": name} for name in rule_types],
+    }
+
+
 def test_data_ok_without_final_pick_is_not_tradable() -> None:
     pipe = Pipeline(dl=FakeDataLoader(), full_cfg={})
     data_quality, reasons = pipe._compute_data_quality(
@@ -89,6 +104,7 @@ def test_complete_evidence_chain_can_enter_final() -> None:
         "name": "Test",
         "entry_exit": {
             "buy_points": [{"is_primary": True, "price": 9.8, "type": "ma_pullback"}],
+            "exit_plan": _exit_plan(),
             "warnings": [],
         },
         "entry_style": "ma_pullback",
@@ -152,6 +168,7 @@ def test_trend_only_candidate_cannot_enter_final() -> None:
         "name": "TrendOnly",
         "entry_exit": {
             "buy_points": [{"is_primary": True, "price": 9.8}],
+            "exit_plan": _exit_plan(),
             "warnings": [],
         },
         "volume_audit": {"status": "ok", "price_volume_pattern": "normal"},
@@ -213,7 +230,7 @@ def test_gate_result_emits_block_reasons() -> None:
     item = {
         "code": "000003",
         "name": "Blocked",
-        "entry_exit": {"buy_points": [{"is_primary": True, "price": 9.8}], "warnings": []},
+        "entry_exit": {"buy_points": [{"is_primary": True, "price": 9.8}], "exit_plan": _exit_plan(), "warnings": []},
         "anti_chase": {"status": "blocked", "reason": "5 日涨幅过大"},
         "entry_plan": {"is_chasing": False},
     }

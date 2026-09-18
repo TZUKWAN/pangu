@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from engine import data_loader as dl_mod
-from engine.data_loader import MultiSourceDataLoader
+from engine.data_loader import DataLoader, MultiSourceDataLoader
 from engine.source_quality import FIELD_MISSING, assess_dataframe, failed_result
 from engine.sources.providers import core as provider_core
 
@@ -173,3 +173,104 @@ def test_turnover_missing_is_not_treated_as_zero():
     assert bool(df.iloc[0]["turnover_missing"]) is True
     assert df.iloc[0]["turnover_status"] == FIELD_MISSING
     assert result.quality.field_quality["turnover_rate"] == FIELD_MISSING
+
+
+def test_registry_opens_circuit_after_repeated_provider_failures():
+    from engine.sources.base import SourceContext, SourceProvider
+    from engine.sources.registry import SourceRegistry
+
+    class BrokenProvider(SourceProvider):
+        name = "broken"
+        kind = "daily_kline"
+
+        def __init__(self):
+            self.calls = 0
+
+        def fetch(self, context):
+            self.calls += 1
+            return failed_result(source=self.name, kind=self.kind, warning="broken")
+
+    class HealthyProvider(SourceProvider):
+        name = "healthy"
+        kind = "daily_kline"
+
+        def fetch(self, context):
+            return assess_dataframe(
+                pd.DataFrame({
+                    "日期": ["20260710"], "收盘": [10.0], "开盘": [9.8],
+                    "最高": [10.2], "最低": [9.7], "成交量": [1000],
+                }),
+                source=self.name,
+                kind=self.kind,
+                expected_date="20260710",
+            )
+
+    broken = BrokenProvider()
+    registry = SourceRegistry()
+    registry.register(broken)
+    registry.register(HealthyProvider())
+    context = SourceContext(loader=object(), mode="live", date="20260710")
+
+    results = [registry.fetch("daily_kline", context) for _ in range(5)]
+    assert all(r.quality.ok for r in results)
+    assert broken.calls == 3
+    assert any(
+        "circuit_open" in warning
+        for warning in results[-1].chain[0].get("warnings", [])
+    )
+
+
+def test_registry_prefers_complete_source_over_earlier_degraded_source():
+    from engine.sources.base import SourceContext, SourceProvider
+    from engine.sources.registry import SourceRegistry
+
+    class DegradedProvider(SourceProvider):
+        name = "degraded_first"
+        kind = "all_spot"
+
+        def fetch(self, context):
+            return assess_dataframe(
+                pd.DataFrame({"代码": ["000001"], "名称": ["A"], "最新价": [10.0]}),
+                source=self.name,
+                kind=self.kind,
+            )
+
+    class CompleteProvider(SourceProvider):
+        name = "complete_second"
+        kind = "all_spot"
+
+        def fetch(self, context):
+            return assess_dataframe(
+                pd.DataFrame({
+                    "代码": ["000001"], "最新价": [10.0],
+                    "涨跌幅": [1.0], "成交量": [1000], "成交额": [10000],
+                    "换手率": [2.0], "流通市值": [1e9], "总市值": [2e9],
+                    "市盈率-动态": [12.0], "市净率": [1.5], "主力净流入": [100.0],
+                }),
+                source=self.name,
+                kind=self.kind,
+            )
+
+    registry = SourceRegistry()
+    registry.register(DegradedProvider())
+    registry.register(CompleteProvider())
+    result = registry.fetch("all_spot", SourceContext(loader=object(), mode="live"))
+    assert result.quality.source == "merged:degraded_first+complete_second"
+    assert result.quality.status == "ok"
+
+
+def test_empty_individual_fund_flow_opens_loader_circuit(loader_env, monkeypatch):
+    dl = MultiSourceDataLoader(**loader_env)
+    calls = []
+
+    def empty_call(*args, **kwargs):
+        calls.append((args, kwargs))
+        return pd.DataFrame()
+
+    monkeypatch.setattr(dl, "_call", empty_call)
+    monkeypatch.setattr(dl, "_individual_fund_flow_from_spot", lambda symbol: pd.DataFrame())
+
+    assert DataLoader.individual_fund_flow(dl, "000001", fast=True).empty
+    assert DataLoader.individual_fund_flow(dl, "000002", fast=True).empty
+    assert len(calls) == 1
+    assert dl._ths_fund_flow_broken is True

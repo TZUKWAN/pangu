@@ -30,7 +30,21 @@ def _full_candidate() -> dict:
         "entry_exit": {
             "buy_points": [{"is_primary": True, "price": 12.30, "type": "突破", "condition": "放量"}],
             "stop_loss": {"price": 11.50, "method": "ATR"},
-            "take_profit": [{"price": 14.00, "method": "1:2"}],
+            "take_profit": [{"price": 14.00, "method": "1:2"}, {"price": 15.00, "method": "1:3"}],
+            "exit_plan": {
+                "entry_price": 12.30, "initial_stop": 11.50,
+                "first_target": 14.00, "final_target": 15.00,
+                "trailing_reference": 12.40,
+                "max_holding_days": 3, "conservative_same_day_order": "stop_first",
+                "rules": [
+                    {"rule_type": "trailing_stop", "condition": "盈利后收盘跌破 MA10"},
+                    {"rule_type": "time_stop", "condition": "持有满 3 个交易日仍未兑现，收盘退出"},
+                    {"rule_type": "news_invalidation", "condition": "出现直接负面事件"},
+                    {"rule_type": "market_retreat", "condition": "市场进入冰点或退潮"},
+                    {"rule_type": "theme_invalidation", "condition": "题材催化被证伪"},
+                    {"rule_type": "trend_break", "condition": "跌破 MA20 或放量跌破 MA10"},
+                ],
+            },
             "position": {"shares": 300, "risk_pct": 1.5},
         },
         "structured_factors": {
@@ -111,6 +125,54 @@ def test_render_markdown_no_structured_section_when_no_p0_data():
     assert "结构化因子（P0）" not in md
     assert "结构化源（P0）" not in md
     assert "净买入" not in md
+
+
+def test_render_markdown_accepts_gate_reject_reason():
+    result = _result([])
+    result.rejected = [{"code": "000001", "name": "测试股", "reject_reason": "重大风险新闻"}]
+    md = render_markdown(result)
+    assert "重大风险新闻" in md
+
+
+def test_new_report_keeps_compat_candidates_out_of_formal_recommendations():
+    result = _result([_full_candidate()])
+    result.final_recommendations = []
+    result.watchlist = [{
+        **_full_candidate(),
+        "watch_reason": "反追涨审计未通过",
+        "candidate_evidence": {"strategy": {"strategy_name": "趋势回踩"}},
+    }]
+    result.candidate_evidence = {"000001": {"decision": {"status": "watch"}}}
+    result.raw_candidate_count = 1
+    result.tradable = False
+    result.no_trade_reason = "数据完整，但无低风险买点"
+
+    md = render_markdown(result)
+
+    assert "本期无正式推荐" in md
+    assert "观察池（非推荐）" in md
+    assert "反追涨审计未通过" in md
+    assert "候选股池" not in md
+    assert "推荐度：80.0" not in md
+    assert "主买点" not in md
+
+
+def test_new_report_renders_only_gate_final_with_conditional_entry():
+    result = _result([_full_candidate()])
+    result.final_recommendations = [_full_candidate()]
+    result.watchlist = []
+    result.candidate_evidence = {"000001": {"decision": {"status": "final"}}}
+    result.raw_candidate_count = 1
+
+    md = render_markdown(result)
+
+    assert "正式推荐（已通过完整证据链）" in md
+    assert "条件买点" in md
+    assert "主买点" not in md
+    assert "第一卖点" in md and "第二卖点" in md
+    assert "移动止盈" in md and "时间卖点" in md
+    assert "新闻证伪" in md and "情绪退潮" in md and "题材失效" in md and "趋势破位" in md
+    assert "同一交易日同时触发止损与止盈时，按止损优先" in md
 
 
 def test_northbound_market_level():

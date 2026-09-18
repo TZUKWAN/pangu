@@ -40,6 +40,8 @@ from .sentiment_meter import SentimentMeter
 from .trend_scanner import StockCandidate, TrendScanner, TrendResult
 from .quant_guard import QuantGuard, GuardResult
 from .entry_exit import EntryExitEngine
+from .news_fetcher import NewsFetcher, NewsResult
+from .news_opportunity import NewsOpportunityScanResult, NewsOpportunityScanner
 from .news_sentiment import NewsSentimentScorer
 from .xuanwu_pool import XuanwuPoolBuilder
 from .market_phase import MarketPhaseAnalyzer
@@ -66,17 +68,19 @@ class PipelineResult:
     source_status: dict[str, Any] = field(default_factory=dict)
     xuanwu_pool: dict[str, Any] = field(default_factory=dict)
     recommendation_allowed: bool = False
-    historical_mode: str = "live"  # live / historical / incomplete
+    historical_mode: str = "live"  # live / historical / incomplete / replay
     watchlist: list[dict[str, Any]] = field(default_factory=list)
     final_recommendations: list[dict[str, Any]] = field(default_factory=list)
     strategy_signals: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     strategy_candidates: list[dict[str, Any]] = field(default_factory=list)
+    replay: bool = False
     # 数据质量与可交易性（新增）
     data_quality: str = "ok"  # ok / degraded / failed
     tradable: bool = False
     no_trade_reason: str = ""
     block_reasons: list[str] = field(default_factory=list)
     candidate_evidence: dict[str, dict[str, Any]] = field(default_factory=dict)
+    raw_candidate_count: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -103,8 +107,9 @@ class PipelineResult:
             "block_reasons": self.block_reasons,
             "final_count": len(self.final_recommendations),
             "watch_count": len(self.watchlist),
-            "raw_candidate_count": len(self.candidates),
+            "raw_candidate_count": self.raw_candidate_count if self.raw_candidate_count is not None else len(self.candidates),
             "candidate_evidence": self.candidate_evidence,
+            "replay": self.replay,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -132,11 +137,13 @@ class PipelineResult:
             no_trade_reason=data.get("no_trade_reason", ""),
             block_reasons=data.get("block_reasons", []),
             candidate_evidence=data.get("candidate_evidence", {}),
+            raw_candidate_count=data.get("raw_candidate_count"),
         )
         result.watchlist = data.get("watchlist", [])
         result.final_recommendations = data.get("final_recommendations", [])
         result.strategy_signals = data.get("strategy_signals", {})
         result.strategy_candidates = data.get("strategy_candidates", [])
+        result.replay = bool(data.get("replay", False))
         return result
 
 
@@ -153,8 +160,11 @@ class Pipeline:
         pick_count: Optional[int] = None,
         db_path: str = "data/pangu.db",
         full_cfg: Optional[dict] = None,
+        replay: bool = False,
     ) -> None:
         self.full_cfg = full_cfg or {}
+        self.replay_requested = replay
+        self._replay_loader: Any = None
         self.dl = dl or DataLoader()
         self.meter = SentimentMeter(self.dl, sentiment_cfg or self.full_cfg.get("sentiment", {}))
         self.scanner = TrendScanner(self.dl, trend_cfg or self.full_cfg.get("trend", {}))
@@ -218,24 +228,64 @@ class Pipeline:
         logger.info("[阶段] %s 完成，耗时 %.2fs", name, time.monotonic() - t0)
         return result_container[0]
 
+    def _activate_replay(self, date: str) -> Any:
+        """激活 PIT-safe 历史回放数据面（按需惰性构建并随日期切换）。"""
+        from .replay_loader import ReplayDataLoader
+
+        if self._replay_loader is None:
+            archive_cfg = (self.full_cfg.get("replay") or {})
+            self._replay_loader = ReplayDataLoader(
+                db_path=archive_cfg.get("db_path", "data/market_breadth/raw.sqlite3"),
+                announcement_dir=archive_cfg.get(
+                    "announcement_dir", "data/announcement_archive"
+                ),
+            )
+        # 非交易日输入自动吸附到最近的历史交易日（向下取整）
+        snap_date = date
+        if snap_date not in self._replay_loader._trade_dates:
+            prior = [d for d in self._replay_loader._trade_dates if d <= snap_date]
+            if not prior:
+                raise ValueError(f"{date} 早于回放档案起点，无法回放")
+            snap_date = prior[-1]
+            logger.info("回放起点 %s 非交易日，吸附至 %s", date, snap_date)
+        self._replay_loader.set_date(snap_date)
+        if self.dl is not self._replay_loader:
+            self.dl = self._replay_loader
+            self.meter = SentimentMeter(self.dl, self.full_cfg.get("sentiment", {}))
+            self.scanner = TrendScanner(self.dl, self.full_cfg.get("trend", {}))
+            guard_cfg = dict(self.full_cfg.get("guard", {}) or {})
+            # 回放档案无估值/财务数据：显式放行缺失估值检查（在结果中标注）。
+            guard_cfg["allow_missing_valuation"] = True
+            self.guard = QuantGuard(self.dl, guard_cfg)
+            self.entry_exit = EntryExitEngine(
+                self.dl, self.full_cfg.get("entry_exit") or {}
+            )
+        return self._replay_loader
+
     # ------------------------------------------------------------------ #
-    def run(self, date: Optional[str] = None) -> PipelineResult:
+    def run(self, date: Optional[str] = None, replay: Optional[bool] = None) -> PipelineResult:
         """跑完整链路，返回结构化结果。
 
         核心变更：
         - 所有关键数据源必须记录 source_status。
         - 关键数据源失败或真实 RPS 缺失时，recommendation_allowed=False。
         - 观察池（watchlist）与严格候选池彻底分离，不进入最终推荐。
-        - 历史日期模式下，若缺少历史关键数据，historical_mode='incomplete'。
+        - replay=True 时用本地档案数据面在历史交易日做 PIT-safe 选股（replay 标注）。
         """
+        use_replay = self.replay_requested if replay is None else replay
         date = date or datetime.now().strftime("%Y%m%d")
-        logger.info("==== 盘古选股 %s 开始 ====", date)
+        if use_replay:
+            self._activate_replay(date)
+        logger.info("==== 盘古选股 %s 开始%s ====", date, "（回放模式）" if use_replay else "")
         overall_t0 = time.monotonic()
 
         source_status: dict[str, Any] = {}
         recommendation_allowed = True
         block_reasons: list[str] = []
-        historical_mode = "live" if date == datetime.now().strftime("%Y%m%d") else "historical"
+        historical_mode = (
+            "replay" if use_replay
+            else ("live" if date == datetime.now().strftime("%Y%m%d") else "historical")
+        )
 
         def _update_status(name: str, status: str, reason: str | None = None, **extra) -> None:
             source_status[name] = {"status": status, "date": date, "reason": reason or "", **extra}
@@ -246,7 +296,7 @@ class Pipeline:
 
         # 0. 全市场快照状态（关键源）
         try:
-            spot = self.dl.all_spot()
+            spot = self.dl.all_spot(date=date)
             spot_quality = spot.attrs.get("source_quality") if hasattr(spot, "attrs") else None
             if len(spot) > 0:
                 if isinstance(spot_quality, dict):
@@ -337,7 +387,53 @@ class Pipeline:
         else:
             _update_status("sentiment", "failed", "情绪温度计阶段失败")
 
-        # ② 市场状态 + 七大策略池（新主入口，不再被旧趋势扫描阻塞）
+        # ② 新闻先发现：先扫全市场快讯中的直接关联股票和重大事件，再让
+        # 趋势/技术/风控验证。新闻不再只能给既有量化候选事后加分。
+        early_news_result: NewsResult | None = None
+        news_discovery = NewsOpportunityScanResult(date=date)
+
+        def _news_discovery_stage() -> tuple[NewsResult, NewsOpportunityScanResult]:
+            fetcher = NewsFetcher(self.dl, self.full_cfg)
+            nr = fetcher.fetch_today(candidates=None, date=date)
+            discovery = NewsOpportunityScanner(self.full_cfg).scan(nr, spot)
+            return nr, discovery
+
+        # 回放模式没有实时新闻面：跳过在线新闻发现（公告事件仍走本地档案）
+        discovery_payload = (
+            None if use_replay else self._stage(
+                "新闻机会发现",
+                _news_discovery_stage,
+                timeout=90.0,
+                default=None,
+            )
+        )
+        if use_replay:
+            source_status["news"] = {
+                "status": "degraded",
+                "reason": "回放模式无实时新闻面（公告事件走本地档案）",
+            }
+        if discovery_payload is not None:
+            early_news_result, news_discovery = discovery_payload
+            news_state_values = [
+                state.get("status")
+                for state in early_news_result.source_state.values()
+                if isinstance(state, dict) and state.get("status")
+            ]
+            discovery_status = "ok" if early_news_result.flashes else "degraded"
+            _update_status(
+                "news_discovery",
+                discovery_status,
+                reason="" if early_news_result.flashes else "; ".join(early_news_result.warnings[:3]),
+                flashes=len(early_news_result.flashes),
+                opportunities=len(news_discovery.opportunities),
+                risk_alerts=len(news_discovery.risk_alerts),
+                sources=early_news_result.source_state,
+                source_states=news_state_values,
+            )
+        else:
+            _update_status("news_discovery", "degraded", reason="新闻机会发现阶段超时或失败")
+
+        # ③ 市场状态 + 七大策略池（新主入口，不再被旧趋势扫描阻塞）
         strategy_framework_enabled = self.full_cfg.get("strategy_framework", {}).get("enabled", True)
         market_phase_dict: dict[str, Any] = {}
         pooled_signals: dict[str, list[Any]] = {}
@@ -352,15 +448,21 @@ class Pipeline:
 
             def _pools_stage() -> dict[str, list[Any]]:
                 return run_all_pools(self.dl, self.full_cfg, date)
-            pooled_signals = self._stage("策略池", _pools_stage, timeout=300.0, default={})
-            if market_phase_dict:
+            pool_result = self._stage("策略池", _pools_stage, timeout=300.0, default=None)
+            pooled_signals = pool_result or {}
+            if news_discovery.opportunities:
+                pooled_signals["新闻事件驱动"] = [
+                    item.to_strategy_signal() for item in news_discovery.opportunities
+                ]
+            if market_phase_dict and pool_result is not None:
                 _update_status("strategy_framework", "ok", phase=market_phase_dict.get("market_phase"), pools=list(pooled_signals.keys()))
             else:
-                _update_status("strategy_framework", "degraded", reason="市场状态分析失败")
+                reason = "策略池阶段超时或失败" if pool_result is None else "市场状态分析失败"
+                _update_status("strategy_framework", "degraded", reason=reason)
         else:
             _update_status("strategy_framework", "disabled", reason="策略框架未启用")
 
-        # ③ 旧趋势扫描（作为策略池的补充数据源，不再决定系统是否继续）
+        # ④ 旧趋势扫描（作为策略池的补充数据源，不再决定系统是否继续）
         def _trend_stage() -> TrendResult:
             return self.scanner.scan(date=date)
         trend: TrendResult = self._stage("趋势扫描", _trend_stage, timeout=300.0, default=TrendResult(boards=[], candidates=[], warnings=["趋势扫描阶段超时或失败"]))
@@ -385,18 +487,32 @@ class Pipeline:
         all_candidates = list(candidate_map.values())
         strategy_candidates = [candidate_map[code].to_dict() for code in strategy_signal_codes if code in candidate_map]
 
-        # ④ 量化护栏（对合并后的候选池统一过滤）
+        # ⑤ 量化护栏（对合并后的候选池统一过滤）
         def _guard_stage() -> GuardResult:
             return self.guard.filter(all_candidates, date=date)
         guarded: GuardResult = self._stage("量化护栏", _guard_stage, timeout=120.0, default=GuardResult(kept=all_candidates, watch=[], rejected=[], warnings=["护栏阶段超时，原池通过"]))
         kept = guarded.kept
         watch_from_guard = guarded.watch
-        if guarded.rejected:
-            _update_status("quant_guard", "degraded", reason=f"硬剔除 {len(guarded.rejected)} 只", rejected_count=len(guarded.rejected))
+        if guarded.warnings:
+            _update_status(
+                "quant_guard",
+                "degraded",
+                reason="; ".join(str(w) for w in guarded.warnings),
+                kept_count=len(kept),
+                watch_count=len(watch_from_guard),
+                rejected_count=len(guarded.rejected),
+            )
         else:
-            _update_status("quant_guard", "ok", kept_count=len(kept))
+            # 护栏剔除风险标的是正常业务结果，不代表数据链路降级。
+            _update_status(
+                "quant_guard",
+                "ok",
+                kept_count=len(kept),
+                watch_count=len(watch_from_guard),
+                rejected_count=len(guarded.rejected),
+            )
 
-        # ④ 买卖点/技术快照：对所有通过/护栏观察的候选统一计算，避免观察池数据丢失
+        # ⑥ 买卖点/技术快照：对所有通过/护栏观察的候选统一计算，避免观察池数据丢失
         deep_candidates = kept[: self.deep_candidate_limit]
         broad_candidates = kept[self.deep_candidate_limit :]
         analysis_candidates = kept + watch_from_guard
@@ -406,6 +522,13 @@ class Pipeline:
                 d = cand.to_dict()
                 ee = self.entry_exit.compute(cand, temperature=temp, account_size=None, date=date)
                 d["entry_exit"] = ee.to_dict()
+                # 顶层 entry_plan/exit_plan 统一为可执行的结构化计划，
+                # 保证台账/回放/闸门读取到 trigger_price 与完整退出规则。
+                ee_dict = d["entry_exit"]
+                if (ee_dict.get("entry_plan") or {}).get("trigger_price"):
+                    d["entry_plan"] = ee_dict["entry_plan"]
+                if ee_dict.get("exit_plan"):
+                    d["exit_plan"] = ee_dict["exit_plan"]
                 d["technical"] = self._technical_snapshot(cand.code, date)
                 return d
             results: list[dict[str, Any]] = [c.to_dict() for c in analysis_candidates]
@@ -446,7 +569,9 @@ class Pipeline:
             for d in analysis_dict.values()
             if d.get("volume_audit")
         ]
-        if not volume_statuses:
+        if not analysis_dict:
+            _update_status("volume_audit", "not_applicable", reason="无通过护栏候选", computed=0)
+        elif not volume_statuses:
             _update_status("volume_audit", "degraded", reason="未生成量能审计", computed=0)
         elif any(s == "missing" for s in volume_statuses):
             _update_status("volume_audit", "degraded", reason="部分候选量能缺失", computed=len(volume_statuses))
@@ -507,7 +632,8 @@ class Pipeline:
         if watchlist:
             logger.info("%d 只进入观察池，不进入最终推荐", len(watchlist))
 
-        # 历史模式：若 all_spot 不是历史数据，则标记 incomplete
+        # 历史模式：若 all_spot 不是历史数据，则标记 incomplete（回放模式除外：
+        # 回放数据面本身就是 PIT 历史数据，允许正常推荐）
         if historical_mode == "historical":
             if source_status.get("all_spot", {}).get("status") == "ok":
                 historical_mode = "incomplete"
@@ -516,7 +642,7 @@ class Pipeline:
 
         candidates = strict_candidates  # 后续流程只对严格候选继续
 
-        # ⑤ 新闻聚合 + 题材情绪（非关键）
+        # ⑦ 新闻聚合 + 题材情绪（复用新闻发现阶段的全市场新闻）
         news_cfg = self.full_cfg.get("news_sentiment", {})
         report_dir = news_cfg.get(
             "report_dir",
@@ -524,13 +650,17 @@ class Pipeline:
         )
         news_data: dict[str, Any] = {}
         news_sentiment: dict[str, dict[str, Any]] = {}
-        news_result = None
+        news_result = early_news_result
 
         def _news_stage() -> tuple[dict[str, Any], dict[str, dict[str, Any]], Any]:
-            from .news_fetcher import NewsFetcher
             fetcher = NewsFetcher(self.dl, self.full_cfg)
-            nr = fetcher.fetch_today(candidates=candidates[: self.deep_candidate_limit], date=date)
+            nr = news_result
+            if nr is None:
+                nr = fetcher.fetch_today(candidates=candidates[: self.deep_candidate_limit], date=date)
+            else:
+                fetcher.enrich_stock_news(nr, candidates[: self.deep_candidate_limit])
             nd = nr.to_dict()
+            nd["discovery"] = news_discovery.to_dict()
             ns: dict[str, dict[str, Any]] = {}
             for c in candidates[: self.deep_candidate_limit]:
                 code = c.get("code", "")
@@ -549,10 +679,20 @@ class Pipeline:
         news_stage_result = self._stage("新闻聚合", _news_stage, timeout=120.0, default=({}, {}, None))
         if isinstance(news_stage_result, tuple) and len(news_stage_result) == 3:
             news_data, news_sentiment, news_result = news_stage_result
-            if news_data.get("source_state"):
-                source_status["news"] = news_data["source_state"]
-            else:
-                source_status["news"] = {"status": "ok"}
+            source_states = news_data.get("source_state") or {}
+            available_sources = [
+                name for name, state in source_states.items()
+                if isinstance(state, dict) and state.get("ok") and name not in {"dedup", "archive"}
+            ]
+            news_status = "ok" if news_data.get("flashes") and available_sources else "degraded"
+            source_status["news"] = {
+                "status": news_status,
+                "flashes": len(news_data.get("flashes") or []),
+                "stock_count": len(news_data.get("stock_news") or {}),
+                "available_sources": available_sources,
+                "sources": source_states,
+                "warnings": list(news_data.get("warnings") or []),
+            }
         else:
             news_data = {"warnings": ["新闻聚合阶段超时或失败"]}
             source_status["news"] = {"status": "degraded", "warnings": ["新闻聚合阶段超时或失败"]}
@@ -602,19 +742,42 @@ class Pipeline:
                 logger.warning("新闻证据层失败: %s", e)
                 source_status.setdefault("news", {})["evidence_error"] = str(e)
 
-        # ⑥ P0 结构化因子（非关键）
-        def _p0_stage() -> dict[str, Any]:
-            from .p0_factors import P0FactorCollector
-            p0_state, market_extra = P0FactorCollector(self.full_cfg, dl=self.dl).collect(
-                date, candidates[: self.deep_candidate_limit]
+        # 策略信号字典（Gate 前置证据与后续报告都需要）
+        strategy_signal_dict = {
+            name: [s.to_dict() for s in sigs]
+            for name, sigs in (pooled_signals or {}).items()
+        }
+
+        # ⑥ P0 结构化因子（非关键；structured_data.enabled=false 可跳过，
+        #    供大规模回放/优化提速——生产保持开启）
+        p0_enabled = bool((self.full_cfg.get("structured_data") or {}).get("enabled", True))
+        if not p0_enabled or not candidates:
+            p0_result = {
+                "p0_state": {
+                    "status": "not_applicable",
+                    "warnings": [] if not p0_enabled else ["无通过护栏候选，跳过 P0 结构化因子"],
+                },
+                "market_extra": {},
+            }
+        else:
+            def _p0_stage() -> dict[str, Any]:
+                from .p0_factors import P0FactorCollector
+                p0_state, market_extra = P0FactorCollector(self.full_cfg, dl=self.dl).collect(
+                    date, candidates[: self.deep_candidate_limit]
+                )
+                for c in candidates[self.deep_candidate_limit :]:
+                    c["structured_factors"] = {
+                        "source_coverage": {"_note": "观察池：未采集结构化因子"},
+                        "reasons": [], "risk_notes": [],
+                    }
+                return {"p0_state": p0_state, "market_extra": market_extra}
+            p0_budget = float((self.full_cfg.get("structured_data") or {}).get("total_budget_seconds", 180))
+            p0_result = self._stage(
+                "P0结构化因子",
+                _p0_stage,
+                timeout=min(240.0, max(30.0, p0_budget + 30.0)),
+                default={},
             )
-            for c in candidates[self.deep_candidate_limit :]:
-                c["structured_factors"] = {
-                    "source_coverage": {"_note": "观察池：未采集结构化因子"},
-                    "reasons": [], "risk_notes": [],
-                }
-            return {"p0_state": p0_state, "market_extra": market_extra}
-        p0_result = self._stage("P0结构化因子", _p0_stage, timeout=600.0, default={})
         market_modules_extra: dict[str, Any] = {}
         if p0_result and isinstance(p0_result, dict) and p0_result.get("p0_state"):
             source_status["structured_data"] = p0_result["p0_state"]
@@ -642,13 +805,13 @@ class Pipeline:
             "推荐评分", _recommend_stage, timeout=120.0, default=candidates
         )
 
-        # ⑧ 多空辩论
+        # ⑧ 多空辩论（回放模式下跳过 LLM/规则辩论循环，不影响排序与闸门）
         def _debate_stage() -> dict[str, Any]:
             from .agent.debate import StockDebater
             debater = StockDebater(cfg=self.full_cfg)
             results = debater.debate_batch(
                 ranked,
-                max_n=self.debate_candidate_limit,
+                max_n=0 if use_replay else self.debate_candidate_limit,
                 news_sentiment=news_sentiment,
                 hot_themes=news_result.hot_themes if news_result else None,
             )
@@ -665,7 +828,14 @@ class Pipeline:
                     hot_themes=news_result.hot_themes if news_result else None,
                 )
             return results
-        debates: dict[str, Any] = self._stage("多空辩论", _debate_stage, timeout=300.0, default={})
+        if use_replay:
+            debates: dict[str, Any] = {}
+            source_status["llm"] = {"status": "degraded", "mode": "replay_skip",
+                                    "warnings": ["回放模式跳过辩论"]}
+            for c in ranked:
+                c.setdefault("debate", {"verdict": "观望", "debate_mode": "replay_skip"})
+        else:
+            debates = self._stage("多空辩论", _debate_stage, timeout=300.0, default={})
         for c in ranked:
             code = c.get("code", "")
             if code in debates:
@@ -696,6 +866,64 @@ class Pipeline:
             if code in decisions:
                 c["xuanwu"] = decisions[code]
 
+        # Gate 前收齐所有数据源状态并计算最终数据质量。不能在 P0、K 线质量
+        # 和 LLM 状态尚未落盘时提前定级，否则报告与证据会使用过期结论。
+        self._merge_loader_source_quality(source_status)
+        data_quality, dq_reasons = self._compute_data_quality(
+            source_status, sentiment, recommendation_allowed, list(analysis_dict.values())
+        )
+
+        # 为 candidate_map 中每只股票建立 CandidateEvidence。被 QuantGuard
+        # 拒绝的股票也必须有证据和可解释决策，不能绕过证据层直接进入 Gate。
+        ranked_by_code = {str(c.get("code") or ""): c for c in ranked if c.get("code")}
+        rejected_by_code = {
+            str(item.get("code") or ""): item
+            for item in guarded.rejected
+            if item.get("code")
+        }
+        pre_gate_candidates: list[dict[str, Any]] = []
+        for code, candidate in candidate_map.items():
+            item = candidate.to_dict()
+            item.update(analysis_dict.get(code) or {})
+            item.update(ranked_by_code.get(code) or {})
+            if code in rejected_by_code:
+                item["guard_reject_reason"] = rejected_by_code[code].get("reason")
+            pre_gate_candidates.append(item)
+
+        technical_snapshot: dict[str, dict[str, Any]] = {}
+        entry_exit_map: dict[str, dict[str, Any]] = {}
+        for item in pre_gate_candidates:
+            code = str(item.get("code") or "")
+            if item.get("technical"):
+                technical_snapshot[code] = item["technical"]
+            if item.get("entry_exit"):
+                entry_exit_map[code] = item["entry_exit"]
+        guarded_state = {
+            "kept_codes": [c.code for c in guarded.kept],
+            "watch_codes": [c.code for c in guarded.watch],
+            "rejected_codes": [item["code"] for item in guarded.rejected],
+        }
+        source_quality = {}
+        if hasattr(self.dl, "get_source_quality"):
+            try:
+                source_quality = self.dl.get_source_quality()
+            except Exception:  # noqa: BLE001
+                pass
+        evidence_map = EvidenceAssembler().assemble(
+            candidates=pre_gate_candidates,
+            strategy_signals=strategy_signal_dict,
+            source_status=source_status,
+            news_evidence=candidate_evidence,
+            market_phase=market_phase_dict,
+            data_quality=data_quality,
+            trend_candidates=[c.to_dict() for c in trend.candidates],
+            guarded=guarded_state,
+            technical_snapshot=technical_snapshot,
+            entry_exit=entry_exit_map,
+            source_quality=source_quality,
+            fund_flow=source_status.get("fund_flow"),
+        )
+
         # ⑨ 最终推荐闸门：策略框架启用时由闸门统一决定 final/watch/rejected
         gate_result = None
         if strategy_framework_enabled:
@@ -719,14 +947,28 @@ class Pipeline:
                 return rg.pass_gate(
                     pooled_signals,
                     candidate_map,
-                    candidates=list(analysis_dict.values()),
+                    candidates=pre_gate_candidates,
                     llm_review_map=llm_review_map or None,
+                    evidence_map=evidence_map,
                 )
             gate_result = self._stage("推荐闸门", _gate_stage, timeout=120.0, default=None)
 
         final_recommendations: list[dict[str, Any]] = []
         if gate_result and recommendation_allowed:
             final_recommendations = gate_result.final_recommendations[: self.pick_count]
+            overflow = gate_result.final_recommendations[self.pick_count :]
+            for item in overflow:
+                item = dict(item)
+                item["gate_status"] = "watch"
+                item["watch_reason"] = f"证据链通过，但超出正式推荐数量上限 {self.pick_count}"
+                gate_result.watchlist.append(item)
+                gate_result.gate_log.append({
+                    "code": item.get("code"),
+                    "gate": "pick_count",
+                    "passed": False,
+                    "reason": item["watch_reason"],
+                })
+            gate_result.final_recommendations = final_recommendations
         elif recommendation_allowed:
             # 未启用策略框架时回退到 xuanwu 决策
             for c in ranked:
@@ -740,10 +982,6 @@ class Pipeline:
 
         # 将闸门结果与分析快照合并，确保 final/watch/rejected 都有 entry_exit/technical/debate
         if gate_result:
-            final_codes = {item["code"] for item in final_recommendations}
-            watch_codes = {item["code"] for item in gate_result.watchlist}
-            rejected_codes = {item["code"] for item in gate_result.rejected}
-
             def _merge_gate_item(item: dict[str, Any]) -> dict[str, Any]:
                 def _is_empty(v: Any) -> bool:
                     if v is None:
@@ -771,6 +1009,16 @@ class Pipeline:
             final_recommendations = [_merge_gate_item(item) for item in final_recommendations]
             gate_result.watchlist = [_merge_gate_item(item) for item in gate_result.watchlist]
             gate_result.rejected = [_merge_gate_item(item) for item in gate_result.rejected]
+            final_recommendations, gate_result.watchlist, gate_result.rejected = self._exclusive_decision_buckets(
+                final_recommendations,
+                gate_result.watchlist,
+                gate_result.rejected,
+            )
+            gate_result.final_recommendations = final_recommendations
+
+            final_codes = {str(item.get("code") or "") for item in final_recommendations}
+            watch_codes = {str(item.get("code") or "") for item in gate_result.watchlist}
+            rejected_codes = {str(item.get("code") or "") for item in gate_result.rejected}
 
             # 让 candidates 数组中的 xuanwu 状态与闸门结果保持一致，UI 可正确分层
             for c in ranked:
@@ -807,6 +1055,15 @@ class Pipeline:
                 "all_decisions": {str(c.get("code") or ""): (c.get("xuanwu") or {}) for c in ranked},
             }
 
+        # Gate 输出后回填 evidence_map 的 decision 字段
+        if gate_result:
+            EvidenceAssembler().update_decisions(
+                evidence_map,
+                gate_result.final_recommendations,
+                gate_result.watchlist,
+                gate_result.rejected,
+            )
+
         # 数据严重降级时：若严格候选为空，把观察池降级展示，避免前端完全空白
         if not ranked and watchlist:
             logger.warning("严格候选为空，将 %d 只观察池标的降级展示", len(watchlist))
@@ -835,13 +1092,7 @@ class Pipeline:
             if posture == "亢奋":
                 final_advice += " 当前情绪亢奋，候选股注意追高风险，轻仓试错。"
 
-        # 汇总 SourceRegistry 在下游阶段产生的 K 线和资金流质量。
-        self._merge_loader_source_quality(source_status)
-
-        # 数据质量与可交易性判定
-        data_quality, dq_reasons = self._compute_data_quality(
-            source_status, sentiment, recommendation_allowed, ranked
-        )
+        # 数据质量已在 Gate 前、全部关键状态收齐后计算；此处用于 tradable 判定。
         # 当前是否已有追价买点由后续 AntiChaseGuard / RecommendationGate 处理，
         # 这里先判断数据层面是否允许交易
         tradable = (data_quality == "ok" and len(final_recommendations) > 0)
@@ -861,39 +1112,26 @@ class Pipeline:
         if market_phase_dict:
             market_modules["market_phase"] = market_phase_dict
 
-        # 策略框架观察池与既有 watchlist 合并
+        # Gate 已消费所有 candidate_map 候选，它的分层是唯一正式结果。旧观察池
+        # 只用于 Gate 前补充证据，不得在 Gate 后重新合并，否则同一股票会同时
+        # 出现在 watch 与 rejected。
         if gate_result:
-            gate_watch_codes = {w["code"] for w in gate_result.watchlist}
-            watchlist = [w for w in watchlist if w.get("code") not in gate_watch_codes]
-            watchlist.extend(gate_result.watchlist)
+            watchlist = list(gate_result.watchlist)
+        rejected_output = gate_result.rejected if gate_result else guarded.rejected
 
-        strategy_signal_dict = {
-            name: [s.to_dict() for s in sigs]
-            for name, sigs in (pooled_signals or {}).items()
-        }
-        assembled_candidate_evidence = EvidenceAssembler().assemble(
-            candidates=ranked,
-            final_recommendations=final_recommendations,
-            watchlist=watchlist,
-            rejected=guarded.rejected,
-            strategy_signals=strategy_signal_dict,
-            source_status=source_status,
-            news_evidence=candidate_evidence,
-            market_phase=market_phase_dict,
-            data_quality=data_quality,
-        )
-        for bucket in (ranked, final_recommendations, watchlist, guarded.rejected):
+        # 将前置 evidence_map 的决策字段回填后挂到各 bucket
+        for bucket in (ranked, final_recommendations, watchlist, rejected_output):
             for item in bucket:
                 code = str(item.get("code") or "")
-                if code in assembled_candidate_evidence:
-                    item["candidate_evidence"] = assembled_candidate_evidence[code]
+                if code in evidence_map:
+                    item["candidate_evidence"] = evidence_map[code]
 
         result = PipelineResult(
             date=date,
             sentiment=sentiment,
             boards=trend.boards,
             candidates=ranked,
-            rejected=guarded.rejected,
+            rejected=rejected_output,
             posture_advice=final_advice,
             warnings=(ms_warnings or []) + trend.warnings + guarded.warnings + block_reasons,
             news=news_data,
@@ -906,14 +1144,59 @@ class Pipeline:
             tradable=tradable,
             no_trade_reason=no_trade_reason,
             block_reasons=dq_reasons,
-            candidate_evidence=assembled_candidate_evidence,
+            candidate_evidence=evidence_map,
+            raw_candidate_count=len(candidate_map),
         )
         # 额外挂载 watchlist / final_recommendations / 策略池原始产出 供报告使用
         result.watchlist = watchlist
         result.final_recommendations = final_recommendations
         result.strategy_signals = strategy_signal_dict
         result.strategy_candidates = strategy_candidates
+        result.replay = use_replay
+        if use_replay:
+            # 回放标注写入所有输出桶，防止回放结果混入实盘统计
+            for bucket in (final_recommendations, watchlist):
+                for item in bucket:
+                    item["replay"] = True
         return result
+
+    @staticmethod
+    def _exclusive_decision_buckets(
+        final_recommendations: list[dict[str, Any]],
+        watchlist: list[dict[str, Any]],
+        rejected: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        """Return deduplicated, mutually exclusive decision buckets.
+
+        Conflicts fail closed: rejected takes precedence over watch, and watch
+        takes precedence over final. The Gate should already be exclusive; this
+        guard prevents a future merge regression from turning a blocked stock
+        back into a recommendation or observation item.
+        """
+
+        def _unique(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            seen: set[str] = set()
+            output: list[dict[str, Any]] = []
+            for item in items:
+                code = str(item.get("code") or "")
+                if not code or code in seen:
+                    continue
+                seen.add(code)
+                output.append(item)
+            return output
+
+        rejected_out = _unique(rejected)
+        rejected_codes = {str(item.get("code") or "") for item in rejected_out}
+        watch_out = [
+            item for item in _unique(watchlist)
+            if str(item.get("code") or "") not in rejected_codes
+        ]
+        watch_codes = {str(item.get("code") or "") for item in watch_out}
+        final_out = [
+            item for item in _unique(final_recommendations)
+            if str(item.get("code") or "") not in rejected_codes | watch_codes
+        ]
+        return final_out, watch_out, rejected_out
 
     def _compute_data_quality(
         self,
@@ -929,44 +1212,51 @@ class Pipeline:
         - ok：数据链路完整。
         """
         reasons: list[str] = []
+        degraded_reasons: list[str] = []
 
-        # 核心源失败判定
+        # 核心行情源失败/降级判定。资金流不属于全局硬前置，由策略 Gate 单独判断。
         core_market_failed: list[str] = []
+        core_market_degraded: list[str] = []
         for key in ("all_spot", "daily_kline"):
-            if source_status.get(key, {}).get("status") == "failed":
+            status = source_status.get(key, {}).get("status")
+            if status == "failed":
                 core_market_failed.append(key)
+            elif status == "degraded":
+                core_market_degraded.append(key)
         if core_market_failed:
             reasons.append(f"核心行情源失败: {', '.join(core_market_failed)}")
-
-        # 核心字段大面积缺失
-        if ranked:
-            def _field_missing_pct(field: str) -> float:
-                missing = sum(1 for c in ranked if safe_float(c.get(field), None) is None)
-                return missing / len(ranked)
-            for field in ("close", "pct_change", "turnover_rate"):
-                if _field_missing_pct(field) > 0.30:
-                    reasons.append(f"核心字段 {field} 缺失率超过30%")
-                    break
+        if core_market_degraded:
+            degraded_reasons.append(f"核心行情源降级: {', '.join(core_market_degraded)}")
 
         # entry_exit 全局失败
         if source_status.get("entry_exit", {}).get("status") == "failed":
             reasons.append("买卖点计算全局失败")
 
+        # 核心字段大面积缺失：close/pct_change 直接判 failed；turnover_rate 判 degraded；volume/amount 判 degraded
+        if ranked:
+            def _field_missing_pct(field: str) -> float:
+                missing = sum(1 for c in ranked if safe_float(c.get(field), None) is None)
+                return missing / len(ranked)
+
+            for field in ("close", "pct_change"):
+                if _field_missing_pct(field) > 0.30:
+                    reasons.append(f"核心字段 {field} 缺失率超过30%")
+
+            turnover_missing_pct = _field_missing_pct("turnover_rate")
+            if turnover_missing_pct > 0.30:
+                degraded_reasons.append(f"换手率缺失率 {turnover_missing_pct*100:.0f}%，仅降级")
+
         if reasons:
             return "failed", reasons
-
-        # degraded 判定
-        degraded_reasons: list[str] = []
         if source_status.get("rps", {}).get("status") != "ok":
             degraded_reasons.append("真实 RPS 表缺失")
-        if source_status.get("fund_flow", {}).get("status") in ("failed", "degraded"):
-            degraded_reasons.append("资金流不可用或降级")
-        if source_status.get("entry_exit", {}).get("status") == "degraded":
-            degraded_reasons.append("部分买卖点计算失败")
+        # 注：entry_exit / volume_audit 的逐候选告警不再拖垮全局数据质量——
+        # 它们由推荐闸门按候选单独拦截（一个候选的买卖点告警不应否决整池）。
+        # 全局计算彻底失败仍会通过上方 entry_exit failed 判定为 failed。
         if source_status.get("quant_guard", {}).get("status") == "degraded":
             degraded_reasons.append("量化护栏降级")
-        if source_status.get("volume_audit", {}).get("status") in ("failed", "degraded"):
-            degraded_reasons.append("量能审计缺失或降级")
+        if source_status.get("strategy_framework", {}).get("status") == "degraded":
+            degraded_reasons.append("策略池或市场阶段分析降级")
 
         # 涨停池异常：交易日但涨停数为 0（这里用 sentiment 里的涨停数近似）
         components = sentiment.get("components") or {}
@@ -1029,9 +1319,12 @@ class Pipeline:
         ]
         if kline_items:
             statuses = [str(q.get("status") or ("ok" if q.get("ok") else "failed")) for _, q in kline_items]
-            if all(s == "failed" for s in statuses):
+            failed_count = sum(s == "failed" for s in statuses)
+            degraded_count = sum(s == "degraded" for s in statuses)
+            non_ok_ratio = (failed_count + degraded_count) / len(statuses)
+            if failed_count / len(statuses) > 0.30:
                 status = "failed"
-            elif any(s != "ok" for s in statuses):
+            elif non_ok_ratio > 0.30:
                 status = "degraded"
             else:
                 status = "ok"
@@ -1039,6 +1332,12 @@ class Pipeline:
                 "status": status,
                 "rows": sum(int(q.get("row_count") or 0) for _, q in kline_items),
                 "sample_count": len(kline_items),
+                "status_counts": {
+                    "ok": statuses.count("ok"),
+                    "degraded": degraded_count,
+                    "failed": failed_count,
+                },
+                "non_ok_ratio": round(non_ok_ratio, 4),
                 "samples": {key: q for key, q in kline_items[:5]},
                 "warnings": [
                     warning
@@ -1061,7 +1360,7 @@ class Pipeline:
             return default
 
         # 关键源任一 failed → market_data 视为 failed
-        critical_keys = ["all_spot", "daily_kline", "rps", "fund_flow", "entry_exit", "quant_guard"]
+        critical_keys = ["all_spot", "daily_kline", "rps", "entry_exit", "quant_guard"]
         critical_failed = [k for k in critical_keys if source_status.get(k, {}).get("status") == "failed"]
         if critical_failed:
             market_status = "failed"

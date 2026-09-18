@@ -137,16 +137,53 @@ def _build_pipeline(cfg: dict) -> Pipeline:
 
 
 def cmd_rps_build(args: argparse.Namespace, cfg: dict) -> int:
-    """离线预计算全市场 20 日 RPS，存 SQLite。盘后跑一次即可。"""
+    """离线预计算全市场 20 日 RPS，存 SQLite。盘后跑一次即可。
+
+    默认优先走本地全市场日线档案直算（秒级、覆盖档案内全部交易日），
+    --live 强制走网络逐股路径（仅补档案缺口时用）。
+    """
     from . import rps as rps_mod
+    db_path = cfg.get("output", {}).get("db_path", "data/pangu.db")
+    if not getattr(args, "live", False):
+        result = rps_mod.compute_rps_from_archive(
+            dates=[args.date] if getattr(args, "date", None) else None,
+            db_path=db_path,
+        )
+        if result.get("status") == "ok" and result.get("built"):
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        print(json.dumps({
+            "note": "本地档案未覆盖请求日期，回退网络路径",
+            "archive_result": result,
+        }, ensure_ascii=False, indent=2))
     dl = build_data_loader(cfg)
     workers = getattr(args, "workers", 10)
     result = rps_mod.compute_all_rps(
         dl, date=args.date,
-        db_path=cfg.get("output", {}).get("db_path", "data/pangu.db"),
+        db_path=db_path,
         workers=workers,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_replay_backtest(args: argparse.Namespace, cfg: dict) -> int:
+    """PIT-safe 历史回放回测：度量正式推荐的真实成功率。"""
+    from .replay_backtest import ReplayBacktester, ReplayBacktestConfig
+    override = {}
+    if getattr(args, "override", None):
+        override = json.loads(args.override)
+    bt_cfg = ReplayBacktestConfig.from_args(
+        args.start, args.end,
+        settings_path="config/settings.yaml",
+        override=override,
+        min_trades_for_claim=getattr(args, "min_trades", 30),
+        enable_progress=not getattr(args, "quiet", False),
+    )
+    bt = ReplayBacktester(bt_cfg)
+    report = bt.run()
+    from .replay_backtest import ReplayBacktester as _B
+    print(_B.summary_text(report))
     return 0
 
 
@@ -175,15 +212,20 @@ def cmd_snapshot_build(args: argparse.Namespace, cfg: dict) -> int:
 
 
 def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
-    pipe = _build_pipeline(cfg)
-    result = pipe.run(args.date)
+    replay = bool(getattr(args, "replay", False))
+    if replay:
+        pipe = Pipeline(full_cfg=cfg, replay=True)
+    else:
+        pipe = _build_pipeline(cfg)
+    result = pipe.run(args.date, replay=True) if replay else pipe.run(args.date)
     data = result.to_dict()
     report_dir = cfg.get("output", {}).get("report_dir", "data/reports")
     out_dir = Path(report_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2)
-    (out_dir / f"{result.date}_p0.json").write_text(payload, encoding="utf-8")
-    (out_dir / f"{result.date}.json").write_text(payload, encoding="utf-8")
+    suffix = "_replay" if replay else ""
+    (out_dir / f"{result.date}{suffix}_p0.json").write_text(payload, encoding="utf-8")
+    (out_dir / f"{result.date}{suffix}.json").write_text(payload, encoding="utf-8")
     print(result.to_json())
     return 0
 
@@ -398,6 +440,8 @@ def main(argv: list[str] | None = None) -> int:
     for name, fn in [("sentiment", cmd_sentiment), ("scan", cmd_scan)]:
         p = sub.add_parser(name, help=f"{name} 命令")
         p.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
+        p.add_argument("--replay", action="store_true",
+                       help="PIT-safe 历史回放：用本地档案数据面跑历史交易日")
         p.set_defaults(func=fn)
 
     # report：默认只渲染已有 JSON 报告，--rerun 才重跑完整 Pipeline
@@ -431,11 +475,21 @@ def main(argv: list[str] | None = None) -> int:
     p_daily.add_argument("--workers", type=int, default=10, help="RPS 预计算并发数")
     p_daily.set_defaults(func=cmd_daily)
 
-    # rps-build：离线预计算全市场 RPS（盘后跑一次）
+    # rps-build：离线预计算全市场 RPS（盘后跑一次；默认档案直算，--live 走网络）
     p_rps = sub.add_parser("rps-build", help="预计算全市场20日RPS存库")
     p_rps.add_argument("--date", default=None, help="日期 YYYYMMDD（默认今天）")
     p_rps.add_argument("--workers", type=int, default=10, help="并发线程数")
+    p_rps.add_argument("--live", action="store_true", help="强制走网络逐股路径（默认本地档案直算）")
     p_rps.set_defaults(func=cmd_rps_build)
+
+    # replay-backtest：PIT-safe 历史回放回测（真实成功率度量）
+    p_rbt = sub.add_parser("replay-backtest", help="历史回放回测：度量推荐真实成功率")
+    p_rbt.add_argument("--start", required=True, help="开始日期 YYYYMMDD")
+    p_rbt.add_argument("--end", required=True, help="结束日期 YYYYMMDD")
+    p_rbt.add_argument("--override", default=None, help="settings 覆盖项 JSON（调参用）")
+    p_rbt.add_argument("--min-trades", type=int, default=30, help="构成统计结论的最小成交样本")
+    p_rbt.add_argument("--quiet", action="store_true", help="不输出逐日进度")
+    p_rbt.set_defaults(func=cmd_replay_backtest)
 
     # calibrate：离线校准上涨概率（首次慢）
     p_cal = sub.add_parser("calibrate", help="校准上涨概率模型（历史统计）")

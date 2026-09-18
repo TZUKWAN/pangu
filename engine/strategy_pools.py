@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -36,8 +37,11 @@ class StrategySignal:
         def _clean(v: Any) -> Any:
             if isinstance(v, (bool,)):
                 return bool(v)
+            if isinstance(v, float) and not math.isfinite(v):
+                # NaN/Inf 会让 Starlette JSONResponse 直接 500、并产出非法 JSON 字面量
+                return None
             if hasattr(v, "item"):
-                return v.item()
+                return _clean(v.item())
             if isinstance(v, dict):
                 return {k: _clean(val) for k, val in v.items()}
             if isinstance(v, list):
@@ -398,6 +402,12 @@ class TrendPullbackPool(StrategyPool):
 
         rps_engine = RPSCalculator(self.dl, self.cfg)
         rps_map = rps_engine.rps_for_codes(codes, date)
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        codes = sorted(
+            codes,
+            key=lambda code: safe_float((rps_map.get(code) or {}).get("rps"), 0.0),
+            reverse=True,
+        )[:expensive_limit]
 
         signals: list[StrategySignal] = []
         for code in codes:
@@ -483,7 +493,14 @@ class OversoldReboundPool(StrategyPool):
 
         spot = spot.copy()
         spot["_code"] = self._code_series(spot).fillna("").astype(str).str.zfill(6)
-        codes = spot["_code"].unique()[:300]
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        # 超跌策略优先检查当日跌幅靠前标的，避免按代码顺序做数百次日 K 请求。
+        codes = (
+            spot.sort_values(pct_col, ascending=True)["_code"]
+            .drop_duplicates()
+            .head(expensive_limit)
+            .tolist()
+        )
         name_col = find_col(spot, ["名称", "name"])
         signals: list[StrategySignal] = []
         for code in codes:
@@ -561,7 +578,12 @@ class SmallQualityPool(StrategyPool):
 
         max_mv = self.cfg.get("small_quality", {}).get("max_circ_mv_yi", 100)
         min_turnover = self.cfg.get("small_quality", {}).get("min_turnover", 2.0)
-        candidates = spot[(spot["_mv"] <= max_mv * 1e8) & (spot["_turnover"] >= min_turnover)]
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        candidates = (
+            spot[(spot["_mv"] <= max_mv * 1e8) & (spot["_turnover"] >= min_turnover)]
+            .sort_values(["_turnover", "_mv"], ascending=[False, True])
+            .head(expensive_limit)
+        )
 
         signals: list[StrategySignal] = []
         for _, row in candidates.iterrows():
@@ -627,7 +649,12 @@ class DividendLowVolPool(StrategyPool):
         spot["_pct"] = pd.to_numeric(spot[pct_col], errors="coerce") if pct_col else pd.Series(0.0, index=spot.index)
 
         min_mv = cfg.get("min_mv_yi", 300)
-        candidates = spot[spot["_mv"] >= min_mv * 1e8]
+        expensive_limit = int((self.cfg.get("strategy_framework") or {}).get("expensive_pool_limit", 20))
+        candidates = (
+            spot[spot["_mv"] >= min_mv * 1e8]
+            .sort_values("_mv", ascending=False)
+            .head(expensive_limit)
+        )
 
         signals: list[StrategySignal] = []
         for _, row in candidates.iterrows():
@@ -733,7 +760,7 @@ class EventDrivenPool(StrategyPool):
                     hot_codes = spot[pd.to_numeric(spot[pct_col], errors="coerce").fillna(0) >= 5.0]["_code"].unique()[:50]
                     name_col = find_col(spot, ["名称"])
                     for code in hot_codes:
-                        event_type, event_title = self._announcement_event(code)
+                        event_type, event_title = self._announcement_event(code, date=date)
                         if event_type:
                             name_rows = spot[spot["_code"] == code]
                             name = str(name_rows[name_col].iloc[0]) if name_col and not name_rows.empty else ""
@@ -754,10 +781,19 @@ class EventDrivenPool(StrategyPool):
 
         return sorted(signals, key=lambda s: s.score, reverse=True)[:15]
 
-    def _announcement_event(self, code: str) -> tuple[Optional[str], str]:
-        """读取最近一条公告，返回 (positive/negative/None, title)。"""
+    def _announcement_event(self, code: str, date: Optional[str] = None) -> tuple[Optional[str], str]:
+        """读取最近一条公告，返回 (positive/negative/None, title)。
+
+        数据加载器提供 ``announcement_events``（如回放的本地公告档案）时优先使用，
+        否则回退到巨潮在线接口。
+        """
         try:
-            rows = self._fetch_cninfo_announcements(code, page_size=5)
+            archive_hook = getattr(self.dl, "announcement_events", None)
+            if callable(archive_hook):
+                rows = archive_hook(code, date or pd.Timestamp.now().strftime("%Y%m%d"))[:5]
+                rows = [{"title": ev.get("title", ""), "type": "", "date": ""} for ev in rows]
+            else:
+                rows = self._fetch_cninfo_announcements(code, page_size=5)
         except Exception:  # noqa: BLE001
             return None, ""
         if not rows:
@@ -828,10 +864,20 @@ def list_pools() -> list[str]:
 def run_all_pools(dl: DataLoader, cfg: dict[str, Any] | None = None, date: Optional[str] = None) -> dict[str, list[StrategySignal]]:
     cfg = cfg or {}
     results: dict[str, list[StrategySignal]] = {}
-    for name, cls in POOL_REGISTRY.items():
+    # 尊重 settings.yaml 的 strategy_framework.pools 白名单（修复：此前该列表
+    # 从未被读取，配置了也只是摆设）；未配置时回退到全部注册池。
+    enabled = (
+        ((cfg.get("strategy_framework") or {}).get("pools"))
+        or list(POOL_REGISTRY.keys())
+    )
+    for name in enabled:
+        cls = POOL_REGISTRY.get(str(name))
+        if cls is None:
+            logger.warning("未知策略池 %s，跳过（检查 strategy_framework.pools）", name)
+            continue
         try:
-            results[name] = cls(dl, cfg).select(date)
+            results[str(name)] = cls(dl, cfg).select(date)
         except Exception as exc:  # noqa: BLE001
             logger.exception("策略池 %s 运行失败", name)
-            results[name] = []
+            results[str(name)] = []
     return results

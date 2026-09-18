@@ -20,12 +20,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 import pandas as pd
 
-from .data_loader import DataLoader, safe_float, find_col as _find_col
-from .trend_scanner import StockCandidate
+from .frame_utils import safe_float, find_col as _find_col
+from .exit_engine import ExitPlan, ShortTermExitEngine
+
+if TYPE_CHECKING:
+    from .data_loader import DataLoader
+    from .trend_scanner import StockCandidate
 
 logger = logging.getLogger("pangu.entry_exit")
 
@@ -112,6 +116,7 @@ class EntryExitResult:
     stop_loss: Optional[StopLoss] = None
     take_profit: list[TakeProfit] = field(default_factory=list)
     trailing_stop: Optional[TakeProfit] = None
+    exit_plan: Optional[ExitPlan] = None
     position: Optional[PositionPlan] = None
     risk_reward_ratio: float = 0.0
     warnings: list[str] = field(default_factory=list)
@@ -127,6 +132,7 @@ class EntryExitResult:
             "stop_loss": self.stop_loss.to_dict() if self.stop_loss else None,
             "take_profit": [t.to_dict() for t in self.take_profit],
             "trailing_stop": self.trailing_stop.to_dict() if self.trailing_stop else None,
+            "exit_plan": self.exit_plan.to_dict() if self.exit_plan else None,
             "position": self.position.to_dict() if self.position else None,
             "risk_reward_ratio": round(self.risk_reward_ratio, 2),
             "warnings": self.warnings,
@@ -159,6 +165,14 @@ class EntryExitEngine:
         self.atr_multiplier: float = ecfg.get("atr_multiplier", 2.0)
         self.min_trade_amount: float = float(ecfg.get("min_trade_amount", 10_000))
         self.min_shares: int = ecfg.get("min_shares", 100)
+        # 次日可执行性：入场区间半宽（±，默认 1%）与主买点允许低于现价的最大深度
+        self.entry_zone_width: float = float(ecfg.get("entry_zone_width", 0.01))
+        self.primary_max_below_pct: float = float(ecfg.get("primary_max_below_pct", 0.08))
+        # 主买点风格偏好：""（自动=优先回踩）/ "breakout_confirm"（动量池买突破确认）
+        self.primary_style_preference: str = str(ecfg.get("primary_style_preference", ""))
+        # 第一止盈目标的盈亏比（默认 2；调低 → 更早减半兑现，胜率↑单笔盈利↓）
+        self.first_target_rr: float = max(1.0, float(ecfg.get("first_target_rr", 2.0)))
+        self.exit_engine = ShortTermExitEngine(ecfg)
 
     # ------------------------------------------------------------------ #
     def compute(
@@ -167,6 +181,7 @@ class EntryExitEngine:
         temperature: float = 50.0,
         account_size: float | None = None,
         date: Optional[str] = None,
+        entry_override: Mapping[str, Any] | None = None,
     ) -> EntryExitResult:
         """为单只候选股计算买卖点方案。
 
@@ -213,11 +228,31 @@ class EntryExitEngine:
         buy_points = self._build_buy_points(close, recent_high, recent_low, ma_map)
         res.buy_points = buy_points
         primary = next((b for b in buy_points if b.is_primary), buy_points[0])
+        if entry_override:
+            override_price = safe_float(entry_override.get("trigger_price"), 0.0)
+            if override_price <= 0 or abs(override_price / close - 1.0) > 0.05:
+                res.warnings.append("事件驱动买点覆盖价无效或偏离现价超过5%")
+                return res
+            primary = BuyPoint(
+                price=override_price,
+                type=str(entry_override.get("type") or "事件确认买点"),
+                condition=str(entry_override.get("trigger_condition") or "隔夜事件次日价格确认"),
+                is_primary=True,
+                style=str(entry_override.get("entry_style") or "breakout_confirm"),
+            )
+            res.buy_points = [primary, *[point for point in buy_points if not point.is_primary]]
 
         # 入口计划
         res.entry_style = primary.style
-        ideal_lower = round(primary.price * 0.99, 2)
-        ideal_upper = round(primary.price * 1.01, 2)
+        override_zone = list(entry_override.get("ideal_entry_zone") or []) if entry_override else []
+        if len(override_zone) == 2:
+            ideal_lower, ideal_upper = sorted((
+                round(safe_float(override_zone[0], primary.price * 0.99), 2),
+                round(safe_float(override_zone[1], primary.price * 1.01), 2),
+            ))
+        else:
+            ideal_lower = round(primary.price * (1 - self.entry_zone_width), 2)
+            ideal_upper = round(primary.price * (1 + self.entry_zone_width), 2)
         res.entry_plan = {
             "entry_style": primary.style,
             "trigger_price": round(primary.price, 2),
@@ -225,7 +260,9 @@ class EntryExitEngine:
             "ideal_entry_zone": [ideal_lower, ideal_upper],
             "current_price": round(close, 2),
             "is_chasing": bool(close > ideal_upper * 1.02),
-            "invalid_condition": self._entry_invalid_condition(primary),
+            "invalid_condition": str(entry_override.get("invalid_condition"))
+            if entry_override and entry_override.get("invalid_condition")
+            else self._entry_invalid_condition(primary),
         }
 
         # 止损：三种方法动态选最合理的
@@ -243,6 +280,12 @@ class EntryExitEngine:
             stop=stop_loss.price,
             resistance=resistance,
             ma10=ma_map.get(10, close),
+        )
+        res.exit_plan = self.exit_engine.build_plan(
+            entry_price=primary.price,
+            stop_price=stop_loss.price,
+            take_profit_prices=[target.price for target in res.take_profit],
+            trailing_reference=res.trailing_stop.price if res.trailing_stop else None,
         )
 
         # 仓位：1% 风险法则 × 情绪系数
@@ -296,12 +339,16 @@ class EntryExitEngine:
         self, candidate: StockCandidate | dict[str, Any]
     ) -> tuple[str, str, float]:
         """统一从 StockCandidate 或字典提取基础字段。"""
-        if isinstance(candidate, StockCandidate):
-            return candidate.code, candidate.name, candidate.close
+        if isinstance(candidate, dict):
+            return (
+                str(candidate.get("code", "")),
+                str(candidate.get("name", "")),
+                safe_float(candidate.get("close"), 0.0),
+            )
         return (
-            str(candidate.get("code", "")),
-            str(candidate.get("name", "")),
-            safe_float(candidate.get("close"), 0.0),
+            str(getattr(candidate, "code", "")),
+            str(getattr(candidate, "name", "")),
+            safe_float(getattr(candidate, "close", 0.0), 0.0),
         )
 
     def _load_kline(self, code: str, date: Optional[str] = None) -> Optional[pd.DataFrame]:
@@ -390,19 +437,34 @@ class EntryExitEngine:
                 ))
 
         # 选主买点：短线策略只把突破位作为触发确认，不作为默认追价买点。
-        # 1. 优先选择现价下方 0-8% 的回踩位；
+        # 1. 优先选择现价下方 0-max_below% 的回踩位；
         # 2. 其次选择现价下方 0-12% 的支撑位低吸；
         # 3. 再退一步选择最近的有效回踩/支撑；
         # 4. 只有完全没有低吸结构时才保留突破位，后续玄武池会拦截追价计划。
+        # primary_style_preference="breakout_confirm" 时（动量/连板池）直接以
+        # 突破确认为主买点——突破型触发在次日盘中上穿即成交，不依赖深度回落。
         pullback_points = [p for p in points if p.type == "回踩位"]
+        max_below = self.primary_max_below_pct
         actionable_pullbacks = [
             p for p in pullback_points
-            if close * 0.92 <= p.price <= close * 1.005
+            if close * (1 - max_below) <= p.price <= close * 1.005
         ]
         support = next((p for p in points if p.type == "支撑位"), points[0])
         actionable_support = support if close * 0.88 <= support.price <= close * 1.002 else None
 
-        if actionable_pullbacks:
+        if self.primary_style_preference == "breakout_confirm":
+            breakout = next((p for p in points if p.style == "breakout_confirm"), None)
+            if breakout is not None and close * 0.97 <= breakout.price <= close * 1.10:
+                primary = breakout
+            elif actionable_pullbacks:
+                primary = max(actionable_pullbacks, key=lambda p: p.price)
+            elif actionable_support is not None:
+                primary = actionable_support
+            elif pullback_points:
+                primary = max([p for p in pullback_points if p.price > 0], key=lambda p: p.price)
+            else:
+                primary = support
+        elif actionable_pullbacks:
             primary = max(actionable_pullbacks, key=lambda p: p.price)
         elif actionable_support is not None:
             primary = actionable_support
@@ -482,16 +544,17 @@ class EntryExitEngine:
         if risk <= 0:
             risk = entry * self.min_risk_pct
 
-        target_2r = entry + 2 * risk
+        first_rr = self.first_target_rr
+        target_first = entry + first_rr * risk
         target_3r = entry + 3 * risk
 
-        # 目标1：盈亏比 2:1（不被阻力压缩，保证标签诚实）。
-        # 阻力位仅作为附加提示，避免「2:1」标签下实际只有1.0的误导。
-        target1 = target_2r
-        method1 = "盈亏比2:1"
-        if resistance > entry and resistance < target_2r:
-            # 阻力位明显低于2:1目标，标注提醒（但不改目标价，保盈亏比诚实）
-            method1 = f"盈亏比2:1（注意前高阻力{resistance:.2f}）"
+        # 目标1：盈亏比 first_target_rr（默认 2:1；可调低换取更高减半兑现率，
+        # 但不低于 1:1 以保证退出计划的分批目标仍有意义）。
+        # 阻力位仅作为附加提示，不改目标价，保盈亏比标签诚实。
+        target1 = target_first
+        method1 = f"盈亏比{first_rr:g}:1"
+        if resistance > entry and resistance < target_first:
+            method1 = f"盈亏比{first_rr:g}:1（注意前高阻力{resistance:.2f}）"
 
         # 目标2：盈亏比 3:1
         target2 = target_3r

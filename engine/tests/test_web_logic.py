@@ -86,6 +86,7 @@ MOCK_RESULT = {
         }
     ],
     "rejected": [{"code": "300001", "name": "特锐德", "reason": "估值过高"}],
+    "raw_candidate_count": 173,
     "posture_advice": "按趋势选股，严格止损。",
     "warnings": ["采样口径说明"],
     "news": {
@@ -144,6 +145,7 @@ def test_latest_returns_mock_data(client):
     assert data["sentiment_report"]["agents"]
     assert data["daily_loop"]["debate"]["with_debate"] == 1
     assert data["daily_loop"]["news"]["flash_count"] == 1
+    assert data["raw_candidate_count"] == 173
     assert data["xuanwu_pool"]["summary"]["candidate_count"] == 1
     assert data["candidates"][0]["xuanwu"]["status"] in ("xuanwu", "watch", "pending_ai", "rejected")
     assert "llm" in data["daily_loop"]
@@ -191,6 +193,21 @@ def test_recommendation_performance_endpoint_returns_empty_journal(client, monke
     assert "horizons" in data["performance"]
 
 
+def test_short_term_performance_endpoint_never_claims_85_without_sample(client, monkeypatch, tmp_path):
+    from engine.web import server
+
+    db_path = tmp_path / "strict_journal.db"
+    monkeypatch.setattr(server, "load_config", lambda: {"output": {"db_path": str(db_path)}})
+    monkeypatch.setattr(server, "build_data_loader", lambda cfg: object())
+
+    response = client.get("/api/recommendations/short-term-performance?days=3650")
+    assert response.status_code == 200
+    acceptance = response.json()["performance"]["acceptance"]
+    assert acceptance["executed_count"] == 0
+    assert acceptance["verified_success_rate_85"] is False
+    assert acceptance["verification_status"] == "insufficient_sample"
+
+
 def test_recommendation_record_latest_endpoint_writes_journal(client, monkeypatch, tmp_path):
     """/api/recommendations/record-latest records the current report for later review."""
     from engine.web import server
@@ -203,11 +220,12 @@ def test_recommendation_record_latest_endpoint_writes_journal(client, monkeypatc
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert data["recorded"]["recorded"] == 1
+    # 完整决策日志同时记录候选与 rejected，避免只保留幸存者。
+    assert data["recorded"]["recorded"] == 2
     assert data["recorded"]["run_date"] == "20260630"
 
     perf = client.get("/api/recommendations/performance?days=365&only_recommended=false").json()["performance"]
-    assert perf["total"] == 1
+    assert perf["total"] == 2
 
     recommended_perf = client.get("/api/recommendations/performance?days=365").json()["performance"]
     assert recommended_perf["only_recommended"] is True
@@ -613,3 +631,120 @@ def test_enrich_backfills_missing_debate_for_candidates():
     assert debate["verdict"] in {"推荐", "观望", "回避"}
     assert debate["mode"] == "rule_validation"
     assert debate["rule_degraded"] is True
+
+
+def test_scan_degraded_does_not_update_latest_or_main_report(client, monkeypatch, tmp_path):
+    """degraded 扫描结果不更新全局 latest，也不写入主报告目录。"""
+    from engine.web import server
+    from engine.pipeline import PipelineResult
+
+    saved_calls = []
+
+    def fake_save_report(result, report_dir="data/reports", *, force_degraded=False):
+        saved_calls.append((result.data_quality, force_degraded, report_dir))
+        return tmp_path / "degraded" / f"{result.date}.md"
+
+    class FakePipeline:
+        def run(self, date):
+            return PipelineResult(
+                date="20260703",
+                sentiment={"temperature": 50, "posture": "正常", "advice": "观望", "components": {}},
+                boards=[],
+                candidates=[],
+                rejected=[],
+                posture_advice="观望",
+                data_quality="degraded",
+                tradable=False,
+                no_trade_reason="测试降级",
+                block_reasons=["测试降级原因"],
+                candidate_evidence={},
+            )
+
+    initial_latest = {
+        "date": "20260630",
+        "sentiment": {"temperature": 60, "posture": "正常", "advice": "观望", "components": {}},
+        "boards": [], "candidates": [], "rejected": [], "posture_advice": "观望",
+        "source_status": {"all_spot": {"status": "ok"}}, "news": {},
+        "data_quality": "ok", "tradable": True, "no_trade_reason": "", "block_reasons": [],
+    }
+    monkeypatch.setattr(server, "_latest_result", initial_latest)
+    monkeypatch.setattr(server, "save_report", fake_save_report)
+    monkeypatch.setattr(server, "get_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(server, "load_config", lambda: {
+        "output": {"report_dir": str(tmp_path), "db_path": str(tmp_path / "journal.db")},
+        "short_term_replay": {"context_archive_dir": str(tmp_path / "contexts")},
+    })
+
+    r = client.post("/api/scan")
+    assert r.status_code == 200
+    task_id = r.json()["task_id"]
+
+    # 轮询 task 完成
+    for _ in range(30):
+        status = client.get(f"/api/scan/{task_id}/status").json()
+        if status["status"] in ("done", "failed"):
+            break
+        import time
+        time.sleep(0.1)
+    assert status["status"] == "done"
+
+    # degraded 结果仍在 task.result 中，但不更新全局 _latest_result
+    assert status["result"]["data_quality"] == "degraded"
+    assert server._latest_result is initial_latest
+
+    # save_report 以 force_degraded=True 调用
+    assert len(saved_calls) == 1
+    quality, force_degraded, _ = saved_calls[0]
+    assert quality == "degraded"
+    assert force_degraded is True
+
+
+def test_scan_ok_updates_latest_and_main_report(client, monkeypatch, tmp_path):
+    """ok 扫描结果更新全局 latest，并写入主报告目录。"""
+    from engine.web import server
+    from engine.pipeline import PipelineResult
+
+    saved_calls = []
+
+    def fake_save_report(result, report_dir="data/reports", *, force_degraded=False):
+        saved_calls.append((result.data_quality, force_degraded))
+        return tmp_path / f"{result.date}.md"
+
+    class FakePipeline:
+        def run(self, date):
+            return PipelineResult(
+                date="20260703",
+                sentiment={"temperature": 60, "posture": "正常", "advice": "观望", "components": {}},
+                boards=[],
+                candidates=[{"code": "000001", "name": "测试", "close": 10}],
+                rejected=[],
+                posture_advice="观望",
+                data_quality="ok",
+                tradable=True,
+                no_trade_reason="",
+                block_reasons=[],
+                candidate_evidence={"000001": {"code": "000001"}},
+            )
+
+    monkeypatch.setattr(server, "_latest_result", None)
+    monkeypatch.setattr(server, "save_report", fake_save_report)
+    monkeypatch.setattr(server, "get_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(server, "load_config", lambda: {
+        "output": {"report_dir": str(tmp_path), "db_path": str(tmp_path / "journal.db")},
+        "short_term_replay": {"context_archive_dir": str(tmp_path / "contexts")},
+    })
+
+    r = client.post("/api/scan")
+    task_id = r.json()["task_id"]
+    for _ in range(30):
+        status = client.get(f"/api/scan/{task_id}/status").json()
+        if status["status"] in ("done", "failed"):
+            break
+        import time
+        time.sleep(0.1)
+    assert status["status"] == "done"
+
+    assert status["result"]["data_quality"] == "ok"
+    assert server._latest_result is not None
+    assert server._latest_result["data_quality"] == "ok"
+    assert saved_calls[-1] == ("ok", False)

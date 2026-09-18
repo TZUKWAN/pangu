@@ -20,14 +20,24 @@ from engine.web import server
 
 
 def _complete_report(date: str = "20260701", n: int = 3) -> dict:
-    """受控完整报告（经 _enrich 形态：带 source_status.structured_data）。"""
+    """符合 PipelineResult.to_dict 新契约的正式报告。"""
+    candidates = [
+        {"code": f"00000{i}", "name": f"s{i}",
+         "recommend": {"recommend_score": 70.0 + i, "grade": "A"}}
+        for i in range(n)
+    ]
     return {
         "date": date,
-        "candidates": [
-            {"code": f"00000{i}", "name": f"s{i}",
-             "recommend": {"recommend_score": 70.0 + i, "grade": "A"}}
-            for i in range(n)
-        ],
+        "data_quality": "ok",
+        "tradable": False,
+        "candidates": candidates,
+        "final_recommendations": [],
+        "watchlist": [],
+        "rejected": [],
+        "final_count": 0,
+        "watch_count": 0,
+        "raw_candidate_count": n,
+        "candidate_evidence": {c["code"]: {"code": c["code"]} for c in candidates},
         "source_status": {"structured_data": "ok", "market_data": "ok"},
     }
 
@@ -50,10 +60,16 @@ def test_report_is_complete_true_for_full(reports_dir):
     assert server._report_is_complete(_complete_report()) is True
 
 
-def test_report_is_complete_false_for_empty_candidates(reports_dir):
+def test_report_is_complete_false_for_invalid_raw_count(reports_dir):
+    """原始候选计数小于实际展示数的残件必须被拒绝。"""
     d = _complete_report()
-    d["candidates"] = []
+    d["raw_candidate_count"] = 0
     assert server._report_is_complete(d) is False
+
+
+def test_report_is_complete_accepts_data_ok_without_candidates(reports_dir):
+    """数据完整但无低风险买点仍是正式报告。"""
+    assert server._report_is_complete(_complete_report(n=0)) is True
 
 
 def test_report_is_complete_false_for_missing_scores(reports_dir):
@@ -69,12 +85,17 @@ def test_report_is_complete_false_for_no_structured(reports_dir):
     assert server._report_is_complete(d) is False
 
 
-def test_report_is_complete_accepts_source_state_form(reports_dir):
-    """_p0.json 直落形态用 source_state.structured_data（dict），也应判完整。"""
+def test_report_is_complete_rejects_legacy_unknown_quality(reports_dir):
+    """旧报告没有明确 data_quality=ok，不能伪装成 latest。"""
     d = _complete_report()
-    d.pop("source_status")
-    d["source_state"] = {"structured_data": {"dragon_tiger_daily": {"status": "ok"}}}
-    assert server._report_is_complete(d) is True
+    d.pop("data_quality")
+    assert server._report_is_complete(d) is False
+
+
+def test_report_is_complete_rejects_degraded(reports_dir):
+    d = _complete_report()
+    d["data_quality"] = "degraded"
+    assert server._report_is_complete(d) is False
 
 
 # ---------------------------- 排序/选择策略 ----------------------------
@@ -88,9 +109,9 @@ def test_old_p0_does_not_override_newer_same_date_json(reports_dir):
 
 
 def test_incomplete_p0_is_skipped(reports_dir):
-    """不完整 _p0（空候选）即便 mtime 最新也跳过，落回完整 .json。"""
+    """不完整 _p0（无明确质量）即便 mtime 最新也跳过，落回完整 .json。"""
     bad = _complete_report()
-    bad["candidates"] = []
+    bad.pop("data_quality")
     _write(reports_dir / "20260701_p0.json", bad, mtime_offset=1000)
     _write(reports_dir / "20260701.json", _complete_report(), mtime_offset=0)
     got = server._find_latest_report()
@@ -116,7 +137,7 @@ def test_cross_date_newer_report_wins(reports_dir):
 def test_all_incomplete_returns_none(reports_dir):
     """全部不完整时返回 None（不返回残件）。"""
     bad = _complete_report()
-    bad["candidates"] = []
+    bad["data_quality"] = "degraded"
     _write(reports_dir / "20260701_p0.json", bad, mtime_offset=0)
     _write(reports_dir / "20260701.json", bad, mtime_offset=0)
     assert server._find_latest_report() is None

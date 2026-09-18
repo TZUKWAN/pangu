@@ -21,9 +21,60 @@ logger = logging.getLogger("pangu.anti_chase")
 class AntiChaseGuard:
     """反追涨闸门。"""
 
+    # 默认阈值（比例：0.07 = 7%）。candidate 的 pct_change 为百分点（10.0 = 10%）
+    # 在 _judge_one 中统一除以 100 换算成比例后比较。
+    DEFAULT_THRESHOLDS: dict[str, dict[str, float]] = {
+        "default": {
+            "ret_3d": 0.18, "ret_5d": 0.30,
+            "dist_ma5": 0.10, "dist_ma20": 0.20, "daily_pct": 0.08,
+        },
+        "leader": {
+            "ret_3d": 0.25, "ret_5d": 0.40,
+            "dist_ma5": 0.15, "dist_ma20": 0.25, "daily_pct": 0.105,
+        },
+        "limit_up_core": {
+            "ret_3d": 0.30, "ret_5d": 0.50,
+            "dist_ma5": 0.20, "dist_ma20": 0.30, "daily_pct": 0.105,
+        },
+        "limit_up_back": {
+            "ret_3d": 0.15, "ret_5d": 0.25,
+            "dist_ma5": 0.10, "dist_ma20": 0.18, "daily_pct": 0.075,
+        },
+        "trend_pullback": {
+            "ret_3d": 0.15, "ret_5d": 0.25,
+            "dist_ma5": 0.08, "dist_ma20": 0.18, "daily_pct": 0.06,
+        },
+        "oversold_rebound": {
+            "ret_3d": 0.12, "ret_5d": 0.20,
+            "dist_ma5": 0.08, "dist_ma20": 0.15, "daily_pct": 0.06,
+        },
+        "large_cap_low_vol": {
+            "ret_3d": 0.20, "ret_5d": 0.35,
+            "dist_ma5": 0.12, "dist_ma20": 0.25, "daily_pct": 0.08,
+        },
+    }
+
     def __init__(self, dl: DataLoader, cfg: dict[str, Any] | None = None) -> None:
         self.dl = dl
-        self.cfg = (cfg or {}).get("anti_chase", {})
+        full_cfg = cfg or {}
+        self.cfg = full_cfg.get("anti_chase", {})
+        # 允许经 settings.yaml 覆盖任一策略的阈值
+        self._threshold_overrides = self.cfg.get("thresholds") or {}
+
+    def _thresholds(self, strategy: str, role: str) -> dict[str, float]:
+        if strategy == "limit_up":
+            base = "limit_up_core" if role in ("龙头", "中军", "leader", "core") else "limit_up_back"
+        else:
+            base = strategy if strategy in self.DEFAULT_THRESHOLDS else "default"
+        th = dict(self.DEFAULT_THRESHOLDS.get(base, self.DEFAULT_THRESHOLDS["default"]))
+        override = self._threshold_overrides.get(base)
+        if isinstance(override, dict):
+            for k, v in override.items():
+                try:
+                    th[k] = float(v)
+                except (TypeError, ValueError):
+                    continue
+        return th
 
     def guard(
         self,
@@ -38,7 +89,8 @@ class AntiChaseGuard:
     def _judge_one(self, item: dict[str, Any], date: str | None) -> dict[str, Any]:
         code = str(item.get("code", ""))
         close = safe_float(item.get("close"), 0.0)
-        pct = safe_float(item.get("pct_change"), 0.0)
+        # pct_change 以百分点传入（10.0 = 10%），统一换算成比例（0.10）
+        pct = safe_float(item.get("pct_change"), 0.0) / 100.0
 
         # 优先用 technical 里的均线，避免重复取 K 线
         ma_map = (item.get("technical") or {}).get("ma") or {}
@@ -46,81 +98,20 @@ class AntiChaseGuard:
         ma20 = safe_float(ma_map.get("ma20"), 0.0)
 
         # 计算短期涨幅
-        ret_3d, ret_5d = self._short_term_returns(code, date)
+        technical_kline = (item.get("technical") or {}).get("kline")
+        ret_3d, ret_5d = self._short_term_returns(code, date, technical_kline)
 
         metrics = {
             "return_3d": round(ret_3d, 4) if ret_3d is not None else None,
             "return_5d": round(ret_5d, 4) if ret_5d is not None else None,
             "dist_ma5": round((close - ma5) / ma5, 4) if ma5 and ma5 > 0 else None,
             "dist_ma20": round((close - ma20) / ma20, 4) if ma20 and ma20 > 0 else None,
-            "daily_pct": round(pct, 4) if pct else 0.0,
+            "daily_pct": round(pct, 4),
         }
 
         strategy = self._strategy_type(item)
         role = (item.get("role") or "").lower()
-
-        # 默认阈值
-        th = {
-            "ret_3d": 0.18,
-            "ret_5d": 0.30,
-            "dist_ma5": 0.08,
-            "dist_ma20": 0.20,
-            "daily_pct": 0.07,
-        }
-        # 策略适配：龙头/中军更宽容
-        if strategy == "leader" or role in ("龙头", "中军", "leader", "core"):
-            th = {
-                "ret_3d": 0.25,
-                "ret_5d": 0.40,
-                "dist_ma5": 0.10,
-                "dist_ma20": 0.25,
-                "daily_pct": 0.09,
-            }
-        elif strategy == "limit_up":
-            # 连板梯队：核心龙头/中军允许继续强势，但后排补涨禁入 final。
-            # 角色 role 用于区分核心 vs 后排；后排阈值更严。
-            if role in ("龙头", "中军", "leader", "core", "中军"):
-                th = {
-                    "ret_3d": 0.30,
-                    "ret_5d": 0.50,
-                    "dist_ma5": 0.12,
-                    "dist_ma20": 0.30,
-                    "daily_pct": 0.10,
-                }
-            else:
-                # 后排补涨：阈值收紧，更容易触发 blocked
-                th = {
-                    "ret_3d": 0.15,
-                    "ret_5d": 0.25,
-                    "dist_ma5": 0.07,
-                    "dist_ma20": 0.18,
-                    "daily_pct": 0.06,
-                }
-        elif strategy == "trend_pullback":
-            th = {
-                "ret_3d": 0.15,
-                "ret_5d": 0.25,
-                "dist_ma5": 0.07,
-                "dist_ma20": 0.18,
-                "daily_pct": 0.05,
-            }
-        elif strategy == "oversold_rebound":
-            th = {
-                "ret_3d": 0.12,
-                "ret_5d": 0.20,
-                "dist_ma5": 0.08,
-                "dist_ma20": 0.15,
-                "daily_pct": 0.05,
-            }
-        elif strategy == "large_cap_low_vol":
-            # 大市值低波主要防日内急拉，其余放宽
-            th = {
-                "ret_3d": 0.20,
-                "ret_5d": 0.35,
-                "dist_ma5": 0.12,
-                "dist_ma20": 0.25,
-                "daily_pct": 0.08,
-            }
+        th = self._thresholds(strategy, role)
 
         watch_reasons: list[str] = []
         blocked_reasons: list[str] = []
@@ -149,7 +140,7 @@ class AntiChaseGuard:
                 watch_reasons.append(f"当日涨幅 {metrics['daily_pct']*100:.1f}% 超出阈值")
 
         # 缩量加速：近3日连续上涨且成交量递减（需要 K 线）
-        if self._is_shrinking_acceleration(code, date):
+        if self._is_shrinking_acceleration(code, date, technical_kline):
             blocked_reasons.append("连续缩量加速，风险过高")
 
         # 结果判定
@@ -189,12 +180,17 @@ class AntiChaseGuard:
             return "breakout_confirm"
         return "default"
 
-    def _short_term_returns(self, code: str, date: str | None) -> tuple[Optional[float], Optional[float]]:
+    def _short_term_returns(
+        self,
+        code: str,
+        date: str | None,
+        technical_kline: Any = None,
+    ) -> tuple[Optional[float], Optional[float]]:
         """返回 (3日涨幅, 5日涨幅)。"""
         if not code:
             return None, None
         try:
-            k = self.dl.daily_kline(code, days=10, date=date)
+            k = pd.DataFrame(technical_kline) if technical_kline else self.dl.daily_kline(code, days=10, date=date)
             if k is None or len(k) < 6:
                 return None, None
             close_col = None
@@ -215,12 +211,17 @@ class AntiChaseGuard:
             logger.debug("%s 短期涨幅计算失败: %s", code, e)
             return None, None
 
-    def _is_shrinking_acceleration(self, code: str, date: str | None) -> bool:
+    def _is_shrinking_acceleration(
+        self,
+        code: str,
+        date: str | None,
+        technical_kline: Any = None,
+    ) -> bool:
         """判断近3日是否连续上涨且成交量递减。"""
         if not code:
             return False
         try:
-            k = self.dl.daily_kline(code, days=10, date=date)
+            k = pd.DataFrame(technical_kline) if technical_kline else self.dl.daily_kline(code, days=10, date=date)
             if k is None or len(k) < 4:
                 return False
             close_col = None

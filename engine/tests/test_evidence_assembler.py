@@ -2,6 +2,49 @@ from __future__ import annotations
 
 from engine.evidence_assembler import EvidenceAssembler
 from engine.pipeline import PipelineResult
+import numpy as np
+
+
+def test_evidence_assembler_pre_gate_pending_decision():
+    """Gate 前置组装时未提供 final/watch/rejected，decision 应为 pending。"""
+    assembler = EvidenceAssembler()
+    evidence = assembler.assemble(
+        candidates=[{"code": "000001", "name": "测试股", "close": 10.0, "pct_change": 1.0}],
+        strategy_signals={"trend_pullback": [{"code": "000001", "score": 80, "theme": "算力"}]},
+        source_status={"all_spot": {"status": "ok"}},
+        data_quality="ok",
+    )
+    ev = evidence["000001"]
+    assert ev["decision"]["status"] == "pending"
+
+
+def test_evidence_assembler_update_decisions():
+    """Gate 输出后回填 decision 字段。"""
+    assembler = EvidenceAssembler()
+    evidence = assembler.assemble(
+        candidates=[{"code": "000001", "name": "测试股", "close": 10.0, "pct_change": 1.0}],
+    )
+    assert evidence["000001"]["decision"]["status"] == "pending"
+
+    assembler.update_decisions(
+        evidence,
+        final_recommendations=[{"code": "000001", "gate_status": "final"}],
+        watchlist=[],
+        rejected=[],
+    )
+    assert evidence["000001"]["decision"]["status"] == "final"
+
+
+def test_evidence_assembler_update_decisions_handles_numpy_values():
+    assembler = EvidenceAssembler()
+    evidence = assembler.assemble(candidates=[{"code": "000001", "name": "测试股"}])
+    assembler.update_decisions(
+        evidence,
+        final_recommendations=[],
+        watchlist=[{"code": "000001", "gate_status": "watch", "vector": np.array([1.0, 2.0])}],
+        rejected=[],
+    )
+    assert evidence["000001"]["decision"]["status"] == "watch"
 
 
 def test_evidence_assembler_builds_required_sections():

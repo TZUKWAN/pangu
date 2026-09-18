@@ -12,9 +12,9 @@ class EvidenceAssembler:
         self,
         *,
         candidates: list[dict[str, Any]],
-        final_recommendations: list[dict[str, Any]],
-        watchlist: list[dict[str, Any]],
-        rejected: list[dict[str, Any]],
+        final_recommendations: list[dict[str, Any]] | None = None,
+        watchlist: list[dict[str, Any]] | None = None,
+        rejected: list[dict[str, Any]] | None = None,
         strategy_signals: dict[str, list[dict[str, Any]]] | None = None,
         source_status: dict[str, Any] | None = None,
         news_evidence: dict[str, dict[str, Any]] | None = None,
@@ -47,8 +47,13 @@ class EvidenceAssembler:
         guard_watch = {str(c) for c in guarded.get("watch_codes", [])}
         guard_rejected = {str(c) for c in guarded.get("rejected_codes", [])}
 
+        # Gate 前置调用时 final/watch/rejected 可能未知，decision 先按 pending 处理
         decision_items: dict[str, dict[str, Any]] = {}
-        for status, items in (("final", final_recommendations), ("watch", watchlist), ("rejected", rejected)):
+        for status, items in (
+            ("final", final_recommendations or []),
+            ("watch", watchlist or []),
+            ("rejected", rejected or []),
+        ):
             for item in items:
                 code = str(item.get("code") or "")
                 if code and code not in decision_items:
@@ -59,7 +64,7 @@ class EvidenceAssembler:
         evidence: dict[str, dict[str, Any]] = {}
         all_items = []
         seen: set[str] = set()
-        for group in (final_recommendations, watchlist, rejected, candidates):
+        for group in (final_recommendations or [], watchlist or [], rejected or [], candidates):
             for item in group:
                 code = str(item.get("code") or "")
                 if code and code not in seen:
@@ -71,6 +76,10 @@ class EvidenceAssembler:
             if not code:
                 continue
             decision_item = decision_items.get(code, item)
+            # Gate 前置：若还没决策，decision 设为 pending
+            if "gate_status" not in decision_item and "status" not in decision_item:
+                decision_item = dict(decision_item)
+                decision_item["gate_status"] = "pending"
             ev = CandidateEvidence(
                 code=code,
                 name=str(item.get("name") or decision_item.get("name") or ""),
@@ -82,7 +91,13 @@ class EvidenceAssembler:
                 news_evidence=dict(item.get("news_evidence") or news_evidence.get(code) or {}),
                 anti_chase=dict(item.get("anti_chase") or {}),
                 entry_plan=dict(item.get("entry_plan") or entry_exit.get(code) or {}),
-                decision=decision_from_item(decision_item),
+                exit_plan=dict(
+                    item.get("exit_plan")
+                    or (item.get("entry_exit") or {}).get("exit_plan")
+                    or (entry_exit.get(code) or {}).get("exit_plan")
+                    or {}
+                ),
+                decision=decision_from_item(decision_item, default_status="pending"),
                 raw=self._raw(
                     item, decision_item,
                     trend_by_code.get(code),
@@ -92,6 +107,36 @@ class EvidenceAssembler:
                 ),
             )
             evidence[code] = ev.to_dict()
+        return evidence
+
+    def update_decisions(
+        self,
+        evidence: dict[str, dict[str, Any]],
+        final_recommendations: list[dict[str, Any]],
+        watchlist: list[dict[str, Any]],
+        rejected: list[dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """Gate 输出后回填 decision 字段，保持 evidence 与 Gate 结果一致。"""
+        def _has_value(value: Any) -> bool:
+            if value is None:
+                return False
+            if isinstance(value, str):
+                return value != ""
+            if isinstance(value, (list, tuple, dict, set)):
+                return len(value) > 0
+            if hasattr(value, "size"):
+                return bool(value.size > 0)
+            return True
+
+        for status, items in (("final", final_recommendations), ("watch", watchlist), ("rejected", rejected)):
+            for item in items:
+                code = str(item.get("code") or "")
+                if not code or code not in evidence:
+                    continue
+                merged = dict(evidence[code])
+                merged.update({k: v for k, v in item.items() if _has_value(v)})
+                merged.setdefault("gate_status", status)
+                evidence[code]["decision"] = decision_from_item(merged)
         return evidence
 
     def _strategy_lookup(self, strategy_signals: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:

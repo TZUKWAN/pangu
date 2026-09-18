@@ -31,7 +31,7 @@ def test_dry_run_skips_data_fetch(cfg, status_dir):
     assert summary["dry_run"] is True
     assert summary["overall_status"] == "ok"
     step_names = {s["name"] for s in summary["steps"]}
-    assert step_names == {"rps_build", "snapshot_build", "scan", "report", "notify"}
+    assert step_names == {"rps_build", "snapshot_build", "scan", "report", "recommendation_loop", "notify"}
     for s in summary["steps"]:
         if s["name"] in ("rps_build", "snapshot_build", "scan"):
             assert s["status"] == "skipped", f"{s['name']} 应在 dry-run 跳过"
@@ -128,6 +128,7 @@ def test_skip_rps_snapshot_forces_degraded_report_and_keeps_evidence(cfg, status
             "final_recommendations": [],
             "strategy_signals": {},
             "strategy_candidates": [],
+            "raw_candidate_count": 7,
         }
         return {"date": "20260101", "candidates": 0, "warnings": []}
 
@@ -142,4 +143,60 @@ def test_skip_rps_snapshot_forces_degraded_report_and_keeps_evidence(cfg, status
     report_json = report_path.with_suffix(".json")
     data = json.loads(report_json.read_text(encoding="utf-8"))
     assert data["candidate_evidence"]["000001"]["decision"]["status"] == "watch"
+    assert data["raw_candidate_count"] == 7
     assert not (tmp_path / "reports" / "latest_ok.json").exists()
+
+
+def test_rps_build_reuses_well_covered_same_day_result(cfg, status_dir, tmp_path, monkeypatch):
+    import pandas as pd
+    from engine import rps as rps_mod
+    from engine import scheduler as scheduler_mod
+
+    snapshot_dir = tmp_path / "snapshots"
+    day_dir = snapshot_dir / "2026-01-01"
+    day_dir.mkdir(parents=True)
+    pd.DataFrame({"代码": [f"{i:06d}" for i in range(100)]}).to_parquet(
+        day_dir / "all_spot.parquet", index=False
+    )
+    cfg = {**cfg, "data": {**cfg["data"], "snapshot_dir": str(snapshot_dir)}}
+    monkeypatch.setattr(rps_mod, "load_rps_map", lambda date, db_path: {f"{i:06d}": 50.0 for i in range(95)})
+    monkeypatch.setattr(
+        scheduler_mod,
+        "build_data_loader",
+        lambda _cfg: (_ for _ in ()).throw(AssertionError("覆盖率足够时不应重新取数")),
+    )
+
+    scheduler = DailyScheduler(cfg, date="20260101", status_dir=status_dir)
+    result = scheduler._step_rps_build()
+    assert result["reused"] is True
+    assert result["ok"] == 95
+    assert result["coverage"] == 0.95
+
+
+def test_upstream_failure_forces_degraded_report(cfg, status_dir, tmp_path, monkeypatch):
+    cfg = {
+        **cfg,
+        "output": {**cfg["output"], "report_dir": str(tmp_path / "reports")},
+    }
+    scheduler = DailyScheduler(cfg, date="20260101", skip_notify=True, status_dir=status_dir)
+    monkeypatch.setattr(scheduler, "_step_rps_build", lambda: {"ok": 100})
+    monkeypatch.setattr(
+        scheduler,
+        "_step_snapshot_build",
+        lambda: (_ for _ in ()).throw(RuntimeError("all_spot empty")),
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_step_scan",
+        lambda: (_ for _ in ()).throw(RuntimeError("stop after force_degraded check")),
+    )
+
+    summary = scheduler.run()
+    assert summary["force_degraded"] is True
+    snapshot_step = next(s for s in summary["steps"] if s["name"] == "snapshot_build")
+    assert snapshot_step["status"] == "failed"
+    assert Path(summary["report_path"]).parent.name == "degraded"
+    diagnostic = json.loads(Path(summary["report_path"]).with_suffix(".json").read_text(encoding="utf-8"))
+    assert diagnostic["data_quality"] == "failed"
+    assert diagnostic["candidates"] == []
+    assert "stop after force_degraded" in diagnostic["no_trade_reason"]

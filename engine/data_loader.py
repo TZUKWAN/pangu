@@ -45,19 +45,25 @@ logger = logging.getLogger("pangu.data")
 
 # akshare import 失败时给出清晰提示，而不是晦涩的 ModuleNotFoundError
 try:
+    if os.environ.get("PANGU_DISABLE_AKSHARE", "").lower() in {"1", "true", "yes"}:
+        raise ImportError("akshare disabled by PANGU_DISABLE_AKSHARE")
     import akshare as ak
     _AK_VERSION = getattr(ak, "__version__", "unknown")
     logger.debug("akshare %s loaded", _AK_VERSION)
-except ImportError:  # pragma: no cover - 环境问题，引导用户装依赖
+except ImportError:  # pragma: no cover - 环境问题/显式禁用
     ak = None
     _AK_VERSION = None
 
-# 可选的 adata 数据源，作为 akshare 失败时的 fallback
+# 可选的 adata 数据源，作为 akshare 失败时的 fallback。adata 的旧版
+# py_mini_racer 在部分 Python 3.14 Windows 进程会原生崩溃；研究/离线命令
+# 可显式禁用它，而不影响其他真实行情提供者。
 try:
+    if os.environ.get("PANGU_DISABLE_ADATA", "").lower() in {"1", "true", "yes"}:
+        raise ImportError("adata disabled by PANGU_DISABLE_ADATA")
     import adata as _adata
     _ADATA_VERSION = getattr(_adata, "__version__", "unknown")
     logger.debug("adata %s loaded", _ADATA_VERSION)
-except ImportError:  # pragma: no cover - 可选依赖
+except ImportError:  # pragma: no cover - 可选依赖/显式禁用
     _adata = None
     _ADATA_VERSION = None
 
@@ -453,6 +459,8 @@ class DataLoader:
             if len(df) > 0:
                 self._mem_put(mem_key, df)
                 return df.copy()
+            logger.warning("all_fund_flow_snapshot 返回空，开启同花顺资金流熔断")
+            self._ths_fund_flow_broken = True
         except Exception as e:  # noqa: BLE001
             logger.warning("all_fund_flow_snapshot 全局失败，后续个股资金流将短路: %s", e)
             self._ths_fund_flow_broken = True
@@ -491,6 +499,10 @@ class DataLoader:
                 if "股票代码" not in df.columns:
                     df["股票代码"] = symbol
                 return df
+            # 当前接口结构变化时 DataLoader._call 会返回空表而非抛异常。
+            # 若不在这里熔断，P0 会对每只候选重复同一个失败请求。
+            logger.warning("individual_fund_flow %s 返回空，开启同花顺资金流熔断", symbol)
+            self._ths_fund_flow_broken = True
             # 2. 兜底：all_spot 当日主力净流入快照
             return self._individual_fund_flow_from_spot(symbol)
         except Exception as e:  # noqa: BLE001
@@ -572,6 +584,52 @@ class DataLoader:
         self._fin_cache[symbol] = (now, df.copy())
         self._mem_put(f"fin:{symbol}", df)
         return df.copy()
+
+    # ------------------------------------------------------------------ #
+    # 市场状态（推荐闸门的市场趋势过滤器用）
+    # ------------------------------------------------------------------ #
+    def market_regime(self, date: Optional[str] = None, index_code: str = "sh000001") -> Optional[dict[str, Any]]:
+        """市场指数趋势状态：收盘是否在 MA20 上方。
+
+        实时模式取腾讯指数日 K（sh000001）；无法取得数据时返回 None
+        （调用方据此停用过滤器，不猜测）。结果按日缓存。
+        """
+        mem = self._mem_get(f"regime:{index_code}")
+        if mem is not None and (date is None or mem.get("asof") == date or mem.get("asof", "") <= (date or "")):
+            if date is None or mem.get("asof") == date:
+                return dict(mem)
+        try:
+            from .tdx_source import tencent_kline_qfq
+            k = tencent_kline_qfq(index_code, days=70)
+        except Exception:  # noqa: BLE001
+            return None
+        if k is None or len(k) < 21:
+            return None
+        closes = pd.to_numeric(k.get("收盘"), errors="coerce").dropna()
+        dates = [str(d).replace("-", "") for d in k.get("日期", [])]
+        if len(closes) < 21:
+            return None
+        ma20 = closes.rolling(20).mean()
+        asof = date or dates[-1]
+        picked = None
+        for i in range(len(dates) - 1, -1, -1):
+            if dates[i] <= asof and not pd.isna(ma20.iloc[i]):
+                picked = i
+                break
+        if picked is None:
+            return None
+        ma20_now = float(ma20.iloc[picked])
+        ma20_prev = float(ma20.iloc[picked - 5]) if picked >= 5 and not pd.isna(ma20.iloc[picked - 5]) else ma20_now
+        result = {
+            "asof": dates[picked],
+            "close": float(closes.iloc[picked]),
+            "ma20": ma20_now,
+            "ma20_rising": bool(ma20_now > ma20_prev),
+            "above_ma20": bool(closes.iloc[picked] > ma20_now),
+            "index": index_code,
+        }
+        self._mem_put(f"regime:{index_code}", result)
+        return dict(result)
 
 
 def _guess_market(symbol: str) -> str:
@@ -946,7 +1004,7 @@ class MultiSourceDataLoader(DataLoader):
         return SourceContext(
             loader=self,
             mode=self._data_mode,
-            data_date=self._data_date,
+            data_date=self._data_date or date,
             symbol=symbol,
             days=days,
             adjust=adjust,
@@ -993,76 +1051,24 @@ class MultiSourceDataLoader(DataLoader):
             return None
 
     # ------------------------------------------------------------------ #
-    def all_spot(self) -> pd.DataFrame:
+    def all_spot(self, date: Optional[str] = None) -> pd.DataFrame:
         """全市场实时行情，带多源 fallback。
 
-        优先级：同花顺全市场(不封IP,5186只) → 腾讯批量(含PE/PB) → adata → 本地快照 → 过期缓存。
-        主源同花顺 stock_fund_flow_individual，13秒出全市场，自带资金流，最稳。
+        优先级：内存缓存 → SourceRegistry 链（含同花顺/腾讯/本地快照/过期缓存）。
         """
+        # 0. 进程内内存缓存（同一次扫描内避免重复打实时源）
+        mem = self._mem_get("all_spot")
+        if mem is not None and len(mem) > 0:
+            return mem.copy()
+
         result = self.source_registry.fetch(
             "all_spot",
-            self._source_context("all_spot", cache_key="all_spot"),
+            self._source_context("all_spot", date=date, cache_key="all_spot"),
         )
         df = self._record_source_result("all_spot", result)
         if len(df) > 0:
             self._mem_put("all_spot", df)
         return df.copy()
-
-        # 0. 进程内内存缓存
-        mem = self._mem_get("all_spot")
-        if mem is not None and len(mem) > 0:
-            return mem.copy()
-
-        # 1. 新鲜文件缓存命中
-        cached = self._cache_get("all_spot")
-        if cached is not None and len(cached) > 0:
-            self._mem_put("all_spot", cached)
-            return cached.copy()
-
-        # 2. 主源：同花顺全市场行情（不封IP，5186只，13秒，最稳）
-        if os.environ.get("PANGU_TDX_FALLBACK", "1") != "0":
-            try:
-                from . import tdx_source
-                df = tdx_source.ths_all_spot()
-                if len(df) > 0:
-                    logger.info("all_spot 主源同花顺：%d 条", len(df))
-                    self._cache_put("all_spot", df)
-                    self._mem_put("all_spot", df)
-                    return df.copy()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("同花顺全市场行情失败: %s", e)
-            # 2b. 次选：腾讯批量行情（含PE/PB，但慢）
-            try:
-                df = tdx_source.tencent_all_spot()
-                if len(df) > 0:
-                    logger.info("all_spot fallback 腾讯：%d 条", len(df))
-                    self._cache_put("all_spot", df)
-                    self._mem_put("all_spot", df)
-                    return df.copy()
-            except Exception as e:  # noqa: BLE001
-                logger.debug("腾讯 all_spot 失败: %s", e)
-
-        if _adata is not None and os.environ.get("PANGU_TDX_FALLBACK", "1") != "0":
-            df = _fetch_all_spot_adata()
-            if len(df) > 0:
-                logger.info("all_spot fallback 到 adata：%d 条", len(df))
-                self._mem_put("all_spot", df)
-                return df.copy()
-
-        df = self._load_snapshot("all_spot")
-        if df is not None and len(df) > 0:
-            logger.warning("all_spot fallback 到本地快照：%d 条", len(df))
-            self._mem_put("all_spot", df)
-            return df.copy()
-
-        stale = self._cache_get_stale("all_spot")
-        if stale is not None and len(stale) > 0:
-            logger.warning("all_spot fallback 到过期缓存：%d 条", len(stale))
-            self._mem_put("all_spot", stale)
-            return stale.copy()
-
-        logger.error("all_spot 全部数据源不可用，返回空 DataFrame")
-        return pd.DataFrame()
 
     def all_fund_flow_snapshot(self, fast: bool = False) -> pd.DataFrame:
         """全市场资金流：返回显式 source_quality，不因不可用抛异常。"""
@@ -1090,13 +1096,17 @@ class MultiSourceDataLoader(DataLoader):
     ) -> pd.DataFrame:
         """个股日 K，带多源 fallback。
 
-        优先级：akshare → mootdx(不封IP,不复权) → adata → 过期缓存。
-        ⚠️ mootdx 返回不复权价，跨除权日精确盈亏需注意；趋势/均线/突破判断不受影响。
+        优先级：进程内内存缓存 → SourceRegistry 链。
         """
         end_dt = datetime.strptime(date, "%Y%m%d") if date else datetime.now()
         start = (end_dt - timedelta(days=days * 2)).strftime("%Y%m%d")
         end = end_dt.strftime("%Y%m%d")
         cache_key = f"kline:{symbol}:{adjust}:{start}:{end}"
+
+        # 0. 进程内内存缓存
+        mem = self._mem_get(cache_key)
+        if mem is not None:
+            return mem.copy()
 
         symbol_norm = str(symbol).zfill(6)
         result = self.source_registry.fetch(
@@ -1115,48 +1125,6 @@ class MultiSourceDataLoader(DataLoader):
             self._mem_put(cache_key, df)
             self._cache_put(cache_key, df)
         return df.copy()
-
-        try:
-            df = super().daily_kline(symbol, days=days, adjust=adjust, date=date)
-            if len(df) > 0:
-                return df
-        except Exception as e:  # noqa: BLE001
-            logger.warning("akshare daily_kline %s 失败，尝试 fallback: %s", symbol, e)
-
-        # mootdx（通达信 TCP，不封 IP）——新浪/腾讯失败时的 K 线兜底
-        if os.environ.get("PANGU_TDX_FALLBACK", "1") != "0":
-            try:
-                from . import tdx_source
-                df = tdx_source.tdx_daily_kline(symbol, days=days)
-                if len(df) > 0:
-                    logger.info("daily_kline %s fallback 到 mootdx：%d 条(不复权)", symbol, len(df))
-                    return df
-            except Exception as e:  # noqa: BLE001
-                logger.debug("mootdx daily_kline %s 失败: %s", symbol, e)
-
-        end_dt = datetime.strptime(date, "%Y%m%d") if date else datetime.now()
-        start = (end_dt - timedelta(days=days * 2)).strftime("%Y%m%d")
-        end = end_dt.strftime("%Y%m%d")
-
-        if _adata is not None and os.environ.get("PANGU_TDX_FALLBACK", "1") != "0":
-            df = _fetch_daily_kline_adata(symbol, start, end, adjust)
-            if len(df) > 0:
-                logger.info("daily_kline %s fallback 到 adata：%d 条", symbol, len(df))
-                if len(df) > days:
-                    df = df.tail(days).reset_index(drop=True)
-                return df
-
-        # 本地快照不含个股 K 线，但可用最新快照日作为参考；继续尝试过期缓存
-        _ = self._load_snapshot("all_spot", as_of_date=date)
-
-        cache_key = f"kline:{symbol}:{adjust}:{start}:{end}"
-        stale = self._cache_get_stale(cache_key)
-        if stale is not None and len(stale) > 0:
-            logger.warning("daily_kline %s fallback 到过期缓存：%d 条", symbol, len(stale))
-            return stale
-
-        logger.error("daily_kline %s 全部数据源不可用，返回空 DataFrame", symbol)
-        return pd.DataFrame()
 
     # ------------------------------------------------------------------ #
     def _load_snapshot(
