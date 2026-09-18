@@ -12,13 +12,14 @@ import contextlib
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 import pandas as pd
 
 from .data_loader import DataLoader, safe_float
+from .short_term_replay import ReplayOutcome, ShortTermReplayConfig, ShortTermReplayEngine
 
 
 HORIZONS = (1, 3, 5, 10)
@@ -115,32 +116,115 @@ class RecommendationJournal:
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_rec_status ON recommendation_journal(run_date, is_recommended, xuanwu_status)")
+            existing_columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(recommendation_journal)").fetchall()
+            }
+            migrations = {
+                "decision_status": "TEXT DEFAULT ''",
+                "entry_plan_json": "TEXT DEFAULT '{}'",
+                "exit_plan_json": "TEXT DEFAULT '{}'",
+                "causal_news_available": "INTEGER NOT NULL DEFAULT 0",
+                "data_quality": "TEXT DEFAULT ''",
+                "historical_mode": "TEXT DEFAULT ''",
+            }
+            for column, ddl in migrations.items():
+                if column not in existing_columns:
+                    conn.execute(f"ALTER TABLE recommendation_journal ADD COLUMN {column} {ddl}")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS short_term_replay_metrics (
+                    run_date TEXT NOT NULL,
+                    code TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    reason TEXT DEFAULT '',
+                    entry_date TEXT DEFAULT '',
+                    exit_date TEXT DEFAULT '',
+                    shares INTEGER DEFAULT 0,
+                    holding_days INTEGER DEFAULT 0,
+                    first_target_taken INTEGER NOT NULL DEFAULT 0,
+                    gross_return REAL,
+                    net_return REAL,
+                    net_pnl REAL,
+                    max_favorable_excursion REAL,
+                    max_adverse_excursion REAL,
+                    causal_context_complete INTEGER NOT NULL DEFAULT 0,
+                    details_json TEXT DEFAULT '{}',
+                    evaluated_at TEXT NOT NULL,
+                    PRIMARY KEY (run_date, code)
+                )
+                """
+            )
             conn.commit()
 
     def record_pipeline_result(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Upsert all candidates from a pipeline result."""
+        """Upsert decisions while preserving the formal Gate recommendation boundary."""
         run_date = str(data.get("date") or datetime.now().strftime("%Y%m%d"))
         now = datetime.now().isoformat(timespec="seconds")
+        formal_contract = "final_recommendations" in data
+        final_codes = {
+            str(item.get("code") or "").zfill(6)
+            for item in (data.get("final_recommendations") or [])
+            if item.get("code")
+        }
+        watch_codes = {
+            str(item.get("code") or "").zfill(6)
+            for item in (data.get("watchlist") or [])
+            if item.get("code")
+        }
+        rejected_codes = {
+            str(item.get("code") or "").zfill(6)
+            for item in (data.get("rejected") or [])
+            if item.get("code")
+        }
+        all_candidates: dict[str, dict[str, Any]] = {}
+        for bucket in ("candidates", "watchlist", "rejected", "final_recommendations"):
+            for item in data.get(bucket) or []:
+                code = str(item.get("code") or "").strip().zfill(6)
+                if not code or not code.isdigit():
+                    continue
+                merged = dict(all_candidates.get(code) or {})
+                merged.update(item)
+                all_candidates[code] = merged
+
+        news = data.get("news") or {}
+        news_archive = (news.get("source_state") or {}).get("archive") or {}
+        causal_news_available = bool(
+            str(news.get("date") or "").replace("-", "") == run_date
+            and news_archive.get("status") == "ok"
+            and news_archive.get("mode") in {"exact_date", "fresh_cache", "persisted_exact_date"}
+        )
+        evidence_map = data.get("candidate_evidence") or {}
         rows = []
-        for c in data.get("candidates") or []:
-            code = str(c.get("code") or "").strip().zfill(6)
-            if not code or not code.isdigit():
-                continue
+        for code, c in sorted(all_candidates.items()):
             rec = c.get("recommend") or {}
             ee = c.get("entry_exit") or {}
             xw = c.get("xuanwu") or {}
             debate = c.get("debate") or {}
+            entry_plan = c.get("entry_plan") or ee.get("entry_plan") or {}
+            exit_plan = c.get("exit_plan") or ee.get("exit_plan") or {}
+            candidate_evidence = c.get("candidate_evidence") or evidence_map.get(code) or {}
             buy_points = ee.get("buy_points") or []
             primary_buy = next((bp for bp in buy_points if bp.get("is_primary")), buy_points[0] if buy_points else {})
             stop_obj = ee.get("stop_loss") or {}
             targets = ee.get("take_profit") or []
+            if code in final_codes:
+                decision_status = "final"
+            elif code in rejected_codes:
+                decision_status = "rejected"
+            elif code in watch_codes:
+                decision_status = "watch"
+            else:
+                decision_status = str(c.get("gate_status") or "candidate")
+            is_recommended = (
+                code in final_codes if formal_contract else xw.get("status") == "xuanwu"
+            )
             rows.append((
                 run_date,
                 code,
                 str(c.get("name") or code),
                 str(c.get("board") or ""),
                 str(xw.get("status") or ""),
-                1 if xw.get("status") == "xuanwu" else 0,
+                1 if is_recommended else 0,
                 safe_float(rec.get("recommend_score"), safe_float(c.get("recommend_score"), 0.0)),
                 str(rec.get("grade") or c.get("grade") or ""),
                 safe_float(c.get("close"), 0.0),
@@ -156,7 +240,19 @@ class RecommendationJournal:
                     "recommend": rec,
                     "reasons": c.get("reasons") or [],
                     "debate": debate,
+                    "strategy": candidate_evidence.get("strategy") or {},
+                    "news_evidence": c.get("news_evidence") or candidate_evidence.get("news_evidence") or {},
+                    "anti_chase": c.get("anti_chase") or candidate_evidence.get("anti_chase") or {},
+                    "price_action": candidate_evidence.get("price_action") or {},
+                    "decision": candidate_evidence.get("decision") or {},
+                    "entry_temperature": safe_float((data.get("sentiment") or {}).get("temperature"), 0.0),
                 }, ensure_ascii=False),
+                decision_status,
+                json.dumps(entry_plan, ensure_ascii=False),
+                json.dumps(exit_plan, ensure_ascii=False),
+                1 if causal_news_available else 0,
+                str(data.get("data_quality") or ""),
+                str(data.get("historical_mode") or ""),
                 now,
             ))
 
@@ -167,8 +263,10 @@ class RecommendationJournal:
                     run_date, code, name, board, xuanwu_status, is_recommended,
                     recommend_score, grade, close_price, entry_price, stop_loss,
                     take_profit, risk_reward, debate_verdict, debate_confidence,
-                    blockers_json, evidence_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    blockers_json, evidence_json, decision_status, entry_plan_json,
+                    exit_plan_json, causal_news_available, data_quality,
+                    historical_mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(run_date, code) DO UPDATE SET
                     name=excluded.name,
                     board=excluded.board,
@@ -184,7 +282,13 @@ class RecommendationJournal:
                     debate_verdict=excluded.debate_verdict,
                     debate_confidence=excluded.debate_confidence,
                     blockers_json=excluded.blockers_json,
-                    evidence_json=excluded.evidence_json
+                    evidence_json=excluded.evidence_json,
+                    decision_status=excluded.decision_status,
+                    entry_plan_json=excluded.entry_plan_json,
+                    exit_plan_json=excluded.exit_plan_json,
+                    causal_news_available=excluded.causal_news_available,
+                    data_quality=excluded.data_quality,
+                    historical_mode=excluded.historical_mode
                 """,
                 rows,
             )
@@ -236,6 +340,193 @@ class RecommendationJournal:
                 conn.commit()
             inserted += len(metrics)
         return {"evaluated_metrics": inserted, "skipped": skipped, "as_of": as_of}
+
+    def evaluate_short_term(
+        self,
+        as_of: Optional[str] = None,
+        *,
+        cfg: ShortTermReplayConfig | Mapping[str, Any] | None = None,
+        only_recommended: bool = True,
+        context_provider: Optional[
+            Callable[[str, str, pd.DataFrame, Mapping[str, Any]], Mapping[str, Mapping[str, Any]]]
+        ] = None,
+        persist: bool = True,
+    ) -> dict[str, Any]:
+        """Replay formal recommendations with executable entry/exit rules and costs.
+
+        ``context_provider`` must return exact-date per-trading-day news, market
+        phase, temperature and theme state.  When it is absent or incomplete,
+        price outcomes are still computed, but the 85% acceptance contract is
+        explicitly blocked by causal-context coverage.
+        """
+        as_of = str(as_of or datetime.now().strftime("%Y%m%d"))
+        engine = ShortTermReplayEngine(cfg)
+        where = "WHERE is_recommended = 1" if only_recommended else ""
+        with self._connect() as conn:
+            records = conn.execute(
+                f"""
+                SELECT run_date, code, entry_plan_json, exit_plan_json,
+                       evidence_json, causal_news_available
+                FROM recommendation_journal
+                {where}
+                ORDER BY run_date, code
+                """
+            ).fetchall()
+
+        outcomes: list[ReplayOutcome] = []
+        skipped_future = 0
+        provider_errors: list[str] = []
+        for run_date, code, entry_json, exit_json, evidence_json, causal_news in records:
+            run_date = str(run_date)
+            code = str(code)
+            if run_date >= as_of:
+                skipped_future += 1
+                continue
+            try:
+                kline = self.dl.daily_kline(code, days=120, date=as_of)
+            except Exception as exc:  # noqa: BLE001
+                outcomes.append(ReplayOutcome(run_date, code, "invalid", f"K线加载失败: {exc}"))
+                continue
+            evidence = _loads_dict(evidence_json)
+            contexts: Mapping[str, Mapping[str, Any]] = {}
+            if context_provider is not None:
+                try:
+                    contexts = context_provider(run_date, code, kline, evidence) or {}
+                except Exception as exc:  # noqa: BLE001
+                    provider_errors.append(f"{run_date}/{code}: {exc}")
+            recommendation = {
+                "code": code,
+                "entry_plan": _loads_dict(entry_json),
+                "exit_plan": _loads_dict(exit_json),
+                "entry_exit": {"exit_plan": _loads_dict(exit_json)},
+                "news_evidence": evidence.get("news_evidence") or {},
+            }
+            outcome = engine.replay(
+                recommendation,
+                kline,
+                signal_date=run_date,
+                daily_context=contexts,
+                causal_signal_evidence=bool(causal_news),
+            )
+            outcomes.append(outcome)
+
+        if persist and outcomes:
+            evaluated_at = datetime.now().isoformat(timespec="seconds")
+            rows = []
+            for outcome in outcomes:
+                payload = outcome.to_dict()
+                rows.append((
+                    outcome.signal_date,
+                    outcome.code,
+                    outcome.status,
+                    outcome.reason,
+                    outcome.entry_date,
+                    outcome.exit_date,
+                    outcome.shares,
+                    outcome.holding_days,
+                    1 if outcome.first_target_taken else 0,
+                    outcome.gross_return,
+                    outcome.net_return,
+                    outcome.net_pnl,
+                    outcome.max_favorable_excursion,
+                    outcome.max_adverse_excursion,
+                    1 if outcome.causal_context_complete else 0,
+                    json.dumps(payload, ensure_ascii=False),
+                    evaluated_at,
+                ))
+            with self._connect() as conn:
+                conn.executemany(
+                    """
+                    INSERT INTO short_term_replay_metrics (
+                        run_date, code, status, reason, entry_date, exit_date,
+                        shares, holding_days, first_target_taken, gross_return,
+                        net_return, net_pnl, max_favorable_excursion,
+                        max_adverse_excursion, causal_context_complete,
+                        details_json, evaluated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(run_date, code) DO UPDATE SET
+                        status=excluded.status,
+                        reason=excluded.reason,
+                        entry_date=excluded.entry_date,
+                        exit_date=excluded.exit_date,
+                        shares=excluded.shares,
+                        holding_days=excluded.holding_days,
+                        first_target_taken=excluded.first_target_taken,
+                        gross_return=excluded.gross_return,
+                        net_return=excluded.net_return,
+                        net_pnl=excluded.net_pnl,
+                        max_favorable_excursion=excluded.max_favorable_excursion,
+                        max_adverse_excursion=excluded.max_adverse_excursion,
+                        causal_context_complete=excluded.causal_context_complete,
+                        details_json=excluded.details_json,
+                        evaluated_at=excluded.evaluated_at
+                    """,
+                    rows,
+                )
+                conn.commit()
+
+        acceptance = engine.acceptance(outcomes)
+        return {
+            "as_of": as_of,
+            "only_recommended": only_recommended,
+            "evaluated_records": len(outcomes),
+            "skipped_future_or_same_day": skipped_future,
+            "context_provider_errors": provider_errors,
+            "acceptance": acceptance,
+            "outcomes": [item.to_dict() for item in outcomes],
+        }
+
+    def short_term_summary(
+        self,
+        *,
+        days: int = 3650,
+        cfg: ShortTermReplayConfig | Mapping[str, Any] | None = None,
+        only_recommended: bool = True,
+        limit: int = 80,
+    ) -> dict[str, Any]:
+        cutoff = (datetime.now() - timedelta(days=max(1, int(days)))).strftime("%Y%m%d")
+        recommended_clause = "AND j.is_recommended = 1" if only_recommended else ""
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT m.details_json, j.name, j.decision_status
+                FROM short_term_replay_metrics m
+                JOIN recommendation_journal j
+                  ON j.run_date=m.run_date AND j.code=m.code
+                WHERE m.run_date >= ? {recommended_clause}
+                ORDER BY m.run_date DESC, m.code
+                """,
+                (cutoff,),
+            ).fetchall()
+        outcomes: list[ReplayOutcome] = []
+        latest: list[dict[str, Any]] = []
+        for details_json, name, decision_status in rows:
+            details = _loads_dict(details_json)
+            outcome = ReplayOutcome(
+                signal_date=str(details.get("signal_date") or ""),
+                code=str(details.get("code") or ""),
+                status=str(details.get("status") or "invalid"),
+                reason=str(details.get("reason") or ""),
+                entry_date=str(details.get("entry_date") or ""),
+                exit_date=str(details.get("exit_date") or ""),
+                shares=int(details.get("shares") or 0),
+                holding_days=int(details.get("holding_days") or 0),
+                first_target_taken=bool(details.get("first_target_taken")),
+                gross_return=(safe_float(details.get("gross_return")) if details.get("gross_return") is not None else None),
+                net_return=(safe_float(details.get("net_return")) if details.get("net_return") is not None else None),
+                net_pnl=(safe_float(details.get("net_pnl")) if details.get("net_pnl") is not None else None),
+                causal_context_complete=bool(details.get("causal_context_complete")),
+            )
+            outcomes.append(outcome)
+            if len(latest) < max(1, int(limit)):
+                latest.append({**details, "name": name, "decision_status": decision_status})
+        acceptance = ShortTermReplayEngine(cfg).acceptance(outcomes)
+        return {
+            "days": days,
+            "only_recommended": only_recommended,
+            "acceptance": acceptance,
+            "latest": latest,
+        }
 
     def _evaluate_one(self, run_date: str, code: str, base_price: float, as_of: str) -> list[tuple[Any, ...]]:
         if base_price <= 0:
@@ -383,3 +674,11 @@ def _loads_list(value: Any) -> list[Any]:
         return parsed if isinstance(parsed, list) else []
     except Exception:
         return []
+
+
+def _loads_dict(value: Any) -> dict[str, Any]:
+    try:
+        parsed = json.loads(value or "{}") if isinstance(value, str) else value
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}

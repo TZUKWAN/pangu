@@ -162,10 +162,41 @@ def render_markdown(result: PipelineResult) -> str:
                     lines.append(f"- 条件买点：{primary['price']:.2f}（{primary['type']}）{primary.get('condition', '')}")
                 sl = ee.get("stop_loss", {})
                 if sl:
-                    lines.append(f"- 止损：{sl.get('price', '-')}（{sl.get('method', '-')}）")
+                    lines.append(f"- 硬止损：{sl.get('price', '-')}（{sl.get('method', '-')}；触及即清仓）")
                 tps = ee.get("take_profit", [])
                 if tps:
-                    lines.append(f"- 止盈：{tps[0]['price']:.2f}（{tps[0]['method']}）")
+                    lines.append(f"- 第一卖点：{tps[0]['price']:.2f}（{tps[0]['method']}；减半并把剩余止损抬到成本）")
+                    if len(tps) > 1:
+                        lines.append(f"- 第二卖点：{tps[-1]['price']:.2f}（{tps[-1]['method']}；清仓）")
+                exit_plan = ee.get("exit_plan") or c.get("exit_plan") or {}
+                exit_rules = {
+                    rule.get("rule_type"): rule for rule in (exit_plan.get("rules") or [])
+                    if isinstance(rule, dict) and rule.get("rule_type")
+                }
+                trailing_rule = exit_rules.get("trailing_stop")
+                if trailing_rule:
+                    lines.append(f"- 移动止盈：{trailing_rule.get('condition', '-')}")
+                time_rule = exit_rules.get("time_stop")
+                if time_rule:
+                    lines.append(f"- 时间卖点：{time_rule.get('condition', '-')}")
+                conditional_labels = {
+                    "news_invalidation": "新闻证伪",
+                    "market_retreat": "情绪退潮",
+                    "theme_invalidation": "题材失效",
+                    "trend_break": "趋势破位",
+                }
+                conditional_exits = [
+                    f"{label}：{exit_rules[rule_type].get('condition', '-')}"
+                    for rule_type, label in conditional_labels.items()
+                    if rule_type in exit_rules
+                ]
+                if conditional_exits:
+                    lines.append(f"- 条件卖点：{'；'.join(conditional_exits)}")
+                if exit_plan:
+                    lines.append(
+                        f"- 执行约定：最多持有 {exit_plan.get('max_holding_days', '-')} 个交易日；"
+                        "同一交易日同时触发止损与止盈时，按止损优先"
+                    )
                 pos = ee.get("position", {})
                 if pos:
                     lines.append(f"- 仓位建议：{pos.get('shares', 0)}股  风险{pos.get('risk_pct', 0):.2f}%")

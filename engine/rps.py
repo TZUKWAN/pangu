@@ -157,6 +157,78 @@ def load_rps_map(date: Optional[str] = None, db_path: str = "data/pangu.db") -> 
     return dict(zip(df["code"].astype(str), df["rps"].astype(float)))
 
 
+def compute_rps_from_archive(
+    dates: Optional[list[str]] = None,
+    db_path: str = "data/pangu.db",
+    archive_db: str = "data/market_breadth/raw.sqlite3",
+    window: int = RPS_WINDOW,
+) -> dict:
+    """从本地全市场日线档案向量化计算 RPS 并入库（毫秒级，PIT-safe）。
+
+    档案覆盖不到的日期返回 missing_dates，由调用方回退到 compute_all_rps 网络路径。
+    """
+    from pathlib import Path as _Path
+
+    archive = _Path(archive_db)
+    if not archive.exists():
+        return {"status": "no_archive", "built": [], "missing_dates": dates or []}
+    ensure_table(db_path)
+    with sqlite3.connect(f"file:{archive.as_posix()}?mode=ro", uri=True) as conn:
+        df = pd.read_sql(
+            "SELECT date, code, close FROM breadth_raw ORDER BY code, date",
+            conn,
+        )
+    if df.empty:
+        return {"status": "empty_archive", "built": [], "missing_dates": dates or []}
+    df["code"] = df["code"].map(
+        lambda s: str(s).split(".", 1)[1].zfill(6) if "." in str(s) else str(s).zfill(6)
+    )
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df = df.dropna(subset=["close"])
+    available = sorted(df["date"].astype(str).unique())
+
+    if dates is None:
+        targets = available[max(window, 1) - 1:]
+    else:
+        wanted = [str(d) for d in dates]
+        targets = [d for d in available if d in set(wanted)]
+    missing = [str(d) for d in (dates or []) if str(d) not in set(available)] if dates else []
+
+    # 向量化 20 日累计涨幅：按 code 分组 close / close.shift(window) - 1
+    df["date"] = df["date"].astype(str)
+    df = df.sort_values(["code", "date"])
+    grp = df.groupby("code")["close"]
+    df["ret_20d"] = grp.transform(lambda s: s / s.shift(window) - 1)
+    df["rps"] = (
+        df.groupby("date")["ret_20d"].rank(pct=True).astype(float) * 100
+    )
+
+    built: list[str] = []
+    with sqlite3.connect(_db_path(db_path)) as conn:
+        for d in targets:
+            day = df[df["date"] == d].dropna(subset=["ret_20d"])
+            if day.empty:
+                continue
+            conn.execute("DELETE FROM rps WHERE date = ?", (d,))
+            rows = [
+                (str(r.code), d, float(r.ret_20d), float(r.rps))
+                for r in day.itertuples(index=False)
+            ]
+            conn.executemany(
+                "INSERT INTO rps (code, date, ret_20d, rps) VALUES (?, ?, ?, ?)",
+                rows,
+            )
+            built.append(d)
+        conn.commit()
+    logger.info("档案 RPS 直算完成：%d 个交易日入库", len(built))
+    return {
+        "status": "ok" if built else "no_dates_built",
+        "built": built,
+        "missing_dates": missing,
+        "per_date_count": int(len(day)) if built else 0,
+    }
+
+
 def is_available(date: Optional[str] = None, db_path: str = "data/pangu.db") -> bool:
     """当日 RPS 表是否可用（已预计算）。"""
     return len(load_rps_map(date, db_path)) > 0

@@ -91,6 +91,12 @@ class EvidenceAssembler:
                 news_evidence=dict(item.get("news_evidence") or news_evidence.get(code) or {}),
                 anti_chase=dict(item.get("anti_chase") or {}),
                 entry_plan=dict(item.get("entry_plan") or entry_exit.get(code) or {}),
+                exit_plan=dict(
+                    item.get("exit_plan")
+                    or (item.get("entry_exit") or {}).get("exit_plan")
+                    or (entry_exit.get(code) or {}).get("exit_plan")
+                    or {}
+                ),
                 decision=decision_from_item(decision_item, default_status="pending"),
                 raw=self._raw(
                     item, decision_item,

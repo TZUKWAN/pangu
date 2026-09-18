@@ -352,3 +352,37 @@ def test_entry_plan_contains_style_and_invalid_condition():
     assert plan["trigger_condition"]
     assert plan["invalid_condition"]
     assert "is_chasing" in plan
+
+
+def test_event_entry_override_recomputes_full_exit_plan() -> None:
+    kline = _make_kline(n=30, trend="up")
+    dl = MockDataLoader(kline)
+    engine = EntryExitEngine(dl, cfg={})
+    close = float(kline["收盘"].iloc[-1])
+    candidate = {"code": "000001", "name": "公告股", "close": close}
+    trigger = round(close * 1.005, 2)
+    result = engine.compute(candidate, temperature=60, entry_override={
+        "entry_style": "breakout_confirm",
+        "trigger_price": trigger,
+        "trigger_condition": "公告次日确认",
+        "ideal_entry_zone": [round(close * 0.995, 2), round(close * 1.03, 2)],
+        "invalid_condition": "高开超过3%不追",
+    }).to_dict()
+    assert result["entry_plan"]["trigger_price"] == trigger
+    assert result["entry_plan"]["ideal_entry_zone"][1] == round(close * 1.03, 2)
+    assert result["exit_plan"]["entry_price"] == trigger
+    assert result["exit_plan"]["initial_stop"] < trigger
+    assert result["exit_plan"]["first_target"] > trigger
+    assert result["exit_plan"]["final_target"] > result["exit_plan"]["first_target"]
+
+
+def test_event_entry_override_rejects_price_more_than_five_percent_away() -> None:
+    kline = _make_kline(n=30, trend="up")
+    engine = EntryExitEngine(MockDataLoader(kline), cfg={})
+    close = float(kline["收盘"].iloc[-1])
+    result = engine.compute(
+        {"code": "000001", "name": "公告股", "close": close},
+        entry_override={"trigger_price": close * 1.08},
+    )
+    assert result.exit_plan is None
+    assert any("超过5%" in warning for warning in result.warnings)

@@ -10,7 +10,8 @@
     2. snapshot-build（收盘快照）
     3. scan（选股 Pipeline）
     4. report（生成 Markdown 简报）
-    5. notify（如果 PANGU_NOTIFY_WEBHOOK 已配置）
+    5. recommendation-loop（记录正式推荐、因果上下文并前向复盘）
+    6. notify（如果 PANGU_NOTIFY_WEBHOOK 已配置）
 
 状态与日志：
     - 写 JSON：data/scheduler/YYYYMMDD_status.json
@@ -178,6 +179,38 @@ class DailyScheduler:
         self.report_path = save_report(result, report_dir, force_degraded=self.force_degraded)
         return {"report_path": str(self.report_path), "degraded": self.force_degraded or result.data_quality != "ok"}
 
+    def _step_recommendation_loop(self) -> dict[str, Any]:
+        if self.pipeline_result is None:
+            raise RuntimeError("无选股结果，无法记录推荐与执行短期复盘")
+        from .recommendation_journal import RecommendationJournal
+        from .short_term_context import ShortTermContextArchive
+
+        context_root = (self.cfg.get("short_term_replay") or {}).get(
+            "context_archive_dir", "data/short_term_context"
+        )
+        archive = ShortTermContextArchive(context_root)
+        archive_result = archive.save_pipeline_result(self.pipeline_result)
+        journal = RecommendationJournal(
+            self.cfg.get("output", {}).get("db_path", "data/pangu.db"),
+            data_loader=build_data_loader(self.cfg),
+        )
+        recorded = journal.record_pipeline_result(self.pipeline_result)
+        legacy = journal.evaluate(as_of=self.date, only_recommended=True)
+        strict = journal.evaluate_short_term(
+            as_of=self.date,
+            cfg=self.cfg.get("short_term_replay") or {},
+            context_provider=lambda run_date, code, kline, evidence: archive.build_replay_context(
+                run_date, code, kline, evidence
+            ),
+        )
+        return {
+            "context_archive": archive_result,
+            "recorded": recorded,
+            "legacy_forward_metrics": legacy,
+            "strict_evaluated_records": strict.get("evaluated_records", 0),
+            "acceptance": strict.get("acceptance") or {},
+        }
+
     def _step_notify(self) -> dict[str, Any]:
         from .notifier import Notifier
         notifier = Notifier.from_env()
@@ -190,7 +223,7 @@ class DailyScheduler:
 
     def _make_notify_summary(self) -> dict[str, Any]:
         data = self.pipeline_result or {}
-        candidates = data.get("candidates") or []
+        candidates = data.get("final_recommendations") or []
         top = [
             {
                 "code": c.get("code"),
@@ -256,7 +289,17 @@ class DailyScheduler:
             skip=self.dry_run,
         ))
 
-        # 5. 通知
+        # 5. 推荐记录 + 精确日期上下文 + 严格短期复盘。
+        data_quality_after_scan = (
+            self.pipeline_result.get("data_quality", "unknown") if self.pipeline_result else "unknown"
+        )
+        self.results.append(self._run_step(
+            "recommendation_loop",
+            self._step_recommendation_loop,
+            skip=self.dry_run or self.force_degraded or data_quality_after_scan != "ok",
+        ))
+
+        # 6. 通知
         self.results.append(self._run_step(
             "notify",
             self._step_notify,

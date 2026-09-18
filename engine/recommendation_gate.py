@@ -69,6 +69,7 @@ class RecommendationGate:
         self.allowed_strategies = set(self.phase.get("allowed_strategies", []))
         self.forbidden_strategies = set(self.phase.get("forbidden_strategies", []))
         self.recommendation_allowed = recommendation_allowed and self.phase.get("recommendation_allowed", True)
+        self._market_regime_cache: Optional[dict[str, Any]] = None
 
     def pass_gate(
         self,
@@ -133,7 +134,7 @@ class RecommendationGate:
                 ev = evidence_map.get(code)
                 if ev:
                     item["candidate_evidence"] = ev
-                    for k in ("data_quality", "volume_audit", "anti_chase", "news_evidence", "entry_plan"):
+                    for k in ("data_quality", "volume_audit", "anti_chase", "news_evidence", "entry_plan", "exit_plan"):
                         if ev.get(k):
                             item[k] = ev[k]
                 self._judge_strategy_signal(code, strategy_name, sig, cand, item, result, watch_codes, rejected_codes, llm_review_map)
@@ -183,6 +184,47 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "phase", "passed": False, "reason": item["watch_reason"]})
             return
 
+        # 1.5 情绪温度门槛：冰点/退潮环境下进攻型信号整体降观察（可配置）。
+        # 温度在信号日收盘后即已知，属因果可得信息。
+        min_temperature = float(
+            (self.cfg.get("strategy_framework", {}).get("gate", {}) or {}).get(
+                "min_temperature", 0
+            )
+        )
+        if min_temperature > 0 and self.temperature < min_temperature:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = (
+                f"情绪温度 {self.temperature:.0f} 低于门槛 {min_temperature:.0f}，观望"
+            )
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "temperature", "passed": False, "reason": item["watch_reason"]})
+            return
+
+        # 1.6 市场趋势状态过滤：指数收盘低于 MA20（严格模式还要求 MA20 上行）时，
+        # 进攻型策略整体降观察。
+        # 数据由数据加载器因果提供（实时=指数日K，回放=档案等权指数）；
+        # 数据不可得（None）时过滤器自动停用，不猜测。
+        gate_cfg = self.cfg.get("strategy_framework", {}).get("gate", {}) or {}
+        if bool(gate_cfg.get("market_regime_filter", True)) and strategy_name in self.ATTACK_STRATEGIES:
+            regime = self._market_regime_cached()
+            if regime is not None:
+                strict = bool(gate_cfg.get("market_regime_strict", False))
+                healthy = bool(regime.get("above_ma20")) and (
+                    bool(regime.get("ma20_rising", True)) or not strict
+                )
+                if not healthy:
+                    detail = (
+                        f"{regime.get('close', 0):.0f} {'>' if regime.get('above_ma20') else '<='} "
+                        f"MA20 {regime.get('ma20', 0):.0f}"
+                    )
+                    if strict:
+                        detail += f"，MA20{'上行' if regime.get('ma20_rising') else '下行'}"
+                    item["gate_status"] = "watch"
+                    item["watch_reason"] = f"市场趋势走弱（{detail}），进攻型策略 {strategy_name} 观望"
+                    result.watchlist.append(item)
+                    result.gate_log.append({"code": code, "gate": "market_regime", "passed": False, "reason": item["watch_reason"]})
+                    return
+
         # 2. QuantGuard
         if code in rejected_codes:
             item["gate_status"] = "rejected"
@@ -200,19 +242,28 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "guard", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 3. 数据质量：正式推荐只能使用明确 ok 的证据链。
+        # 3. 数据质量：failed 一票否决；degraded 记录说明但交由逐候选闸门把关
+        # （修复：此前全局 degraded 会无差别否决整池候选——一只票的买卖点告警
+        #   会拖死全部候选。逐候选数据问题由后继各道闸门单独拦截。）
         strict_evidence = isinstance(item.get("candidate_evidence"), dict)
         data_quality = item.get("data_quality") or {}
         overall_quality = data_quality.get("overall") if isinstance(data_quality, dict) else data_quality
-        if strict_evidence and overall_quality != "ok":
+        if strict_evidence and overall_quality == "failed":
             item["gate_status"] = "watch"
-            item["watch_reason"] = f"数据质量 {overall_quality or 'unknown'}，禁止正式推荐"
+            item["watch_reason"] = "数据链路 failed，禁止正式推荐"
             result.watchlist.append(item)
             result.gate_log.append({"code": code, "gate": "data_quality", "passed": False, "reason": item["watch_reason"]})
             return
+        if strict_evidence and overall_quality == "degraded":
+            item["data_quality_note"] = "全局数据降级（逐候选闸门已单独把关）"
 
-        # 4. 数据真实性：正式推荐必须有真实 RPS
-        if cand and cand.rps_mode != "real" and not is_watch:
+        # 4. 数据真实性：正式推荐必须有真实 RPS（可经 gate.require_real_rps 配置）
+        require_real_rps = bool(
+            (self.cfg.get("strategy_framework", {}).get("gate", {}) or {}).get(
+                "require_real_rps", True
+            )
+        )
+        if require_real_rps and cand and cand.rps_mode != "real" and not is_watch:
             item["gate_status"] = "watch"
             item["watch_reason"] = f"RPS 模式为 {cand.rps_mode}"
             result.watchlist.append(item)
@@ -273,7 +324,18 @@ class RecommendationGate:
                 result.gate_log.append({"code": code, "gate": "entry_exit", "passed": False, "reason": item["watch_reason"]})
                 return
 
-        # 8. 反追涨闸门
+        # 8. 完整卖点：正式推荐必须具备可执行、可回测的多层退出计划。
+        exit_plan = item.get("exit_plan") or (item.get("entry_exit") or {}).get("exit_plan") or {}
+        exit_plan_error = self._exit_plan_error(exit_plan)
+        if exit_plan_error:
+            item["gate_status"] = "watch"
+            item["watch_reason"] = f"卖出计划不完整：{exit_plan_error}"
+            result.watchlist.append(item)
+            result.gate_log.append({"code": code, "gate": "exit_plan", "passed": False, "reason": item["watch_reason"]})
+            return
+        item["exit_plan"] = exit_plan
+
+        # 9. 反追涨闸门
         ac = item.get("anti_chase") or {}
         if strict_evidence and not ac:
             item["gate_status"] = "watch"
@@ -294,7 +356,8 @@ class RecommendationGate:
             result.gate_log.append({"code": code, "gate": "anti_chase", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 9. 条件买点：追价型买点禁止进入 final
+        # 10. 条件买点：缺失仍拦截；追价型买点降级为提示（条件单机制本身保证
+        #   不追高——未回落到触发价只会不成交，不会亏损成交）。
         entry_plan = item.get("entry_plan") or {}
         if strict_evidence and not entry_plan:
             item["gate_status"] = "watch"
@@ -302,30 +365,48 @@ class RecommendationGate:
             result.watchlist.append(item)
             result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
             return
+        soft_entry_chase = bool(
+            (self.cfg.get("strategy_framework", {}).get("gate", {}) or {}).get(
+                "soft_entry_chase", True
+            )
+        )
         if entry_plan.get("is_chasing"):
-            item["gate_status"] = "watch"
-            item["watch_reason"] = f"追价型买点：{entry_plan.get('trigger_condition', '')}"
-            result.watchlist.append(item)
-            result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
-            return
+            if soft_entry_chase:
+                item["entry_chase_note"] = (
+                    f"现价已高于条件买点，只能等待回落触发：{entry_plan.get('trigger_condition', '')}"
+                )
+            else:
+                item["gate_status"] = "watch"
+                item["watch_reason"] = f"追价型买点：{entry_plan.get('trigger_condition', '')}"
+                result.watchlist.append(item)
+                result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
+                return
         if item.get("entry_style") == "breakout_confirm":
             trigger_price = safe_float(entry_plan.get("trigger_price"), 0.0)
             current_price = safe_float(entry_plan.get("current_price"), 0.0)
             if trigger_price > 0 and current_price > trigger_price * 1.01:
-                item["gate_status"] = "watch"
-                item["watch_reason"] = "突破确认型买点已偏离触发价 >1%，不再追价"
-                result.watchlist.append(item)
-                result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
-                return
+                if soft_entry_chase:
+                    item["entry_chase_note"] = "突破确认型买点已偏离触发价 >1%，等待回踩或放弃"
+                else:
+                    item["gate_status"] = "watch"
+                    item["watch_reason"] = "突破确认型买点已偏离触发价 >1%，不再追价"
+                    result.watchlist.append(item)
+                    result.gate_log.append({"code": code, "gate": "entry_plan", "passed": False, "reason": item["watch_reason"]})
+                    return
 
-        # 10. 新闻多空证据审计：重大风险才 rejected，一般利空降级 watch
+        # 11. 新闻多空证据审计：重大风险才 rejected，一般利空降级 watch；
+        #   无新闻覆盖不再结构性排除（修复：此前无新闻 = 一律 watch，
+        #   小盘/冷门股永远出不了正式推荐）。有负面证据仍拦截。
         ev = item.get("news_evidence") or {}
         if strict_evidence and not ev:
-            item["gate_status"] = "watch"
-            item["watch_reason"] = "新闻证据缺失，禁止正式推荐"
-            result.watchlist.append(item)
-            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
-            return
+            item["news_evidence"] = {
+                "sentiment_label": "neutral",
+                "support_count": 0,
+                "verdict_reason": "无新闻覆盖（中性处理，不作为否定证据）",
+                "coverage": "missing",
+            }
+            item["news_coverage_note"] = "无新闻覆盖，仅按技术面/资金面认定"
+        ev = item.get("news_evidence") or {}
         ev_label = ev.get("sentiment_label", "")
         if ev and ev_label == "bearish" and ev.get("risk_events"):
             item["gate_status"] = "rejected"
@@ -345,14 +426,17 @@ class RecommendationGate:
             result.watchlist.append(item)
             result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
             return
-        if ev and ev_label in ("neutral", "weak") and ev.get("support_count", 0) == 0:
+
+        # 12. 最低门槛分：信号分低于阈值的降观察（可配置，0=不启用）。
+        min_final_score = float(gate_cfg.get("min_final_score", 0))
+        if min_final_score > 0 and safe_float(sig.score, 0.0) < min_final_score:
             item["gate_status"] = "watch"
-            item["watch_reason"] = f"新闻证据不足：{ev.get('verdict_reason', '')}"
+            item["watch_reason"] = f"信号分 {sig.score:.0f} 低于门槛 {min_final_score:.0f}"
             result.watchlist.append(item)
-            result.gate_log.append({"code": code, "gate": "news_evidence", "passed": False, "reason": item["watch_reason"]})
+            result.gate_log.append({"code": code, "gate": "min_final_score", "passed": False, "reason": item["watch_reason"]})
             return
 
-        # 11. LLM 复核（若启用）
+        # 13. LLM 复核（若启用）
         review = llm_review_map.get(code) if llm_review_map else None
         if self.cfg.get("llm", {}).get("enable_review", False):
             if not review or not review.get("passed"):
@@ -365,6 +449,42 @@ class RecommendationGate:
         item["gate_status"] = "final"
         result.final_recommendations.append(item)
         result.gate_log.append({"code": code, "gate": "final", "passed": True})
+
+    @staticmethod
+    def _exit_plan_error(plan: dict[str, Any]) -> str:
+        if not isinstance(plan, dict) or not plan:
+            return "缺少结构化 exit_plan"
+        entry = safe_float(plan.get("entry_price"), 0.0)
+        stop = safe_float(plan.get("initial_stop"), 0.0)
+        first = safe_float(plan.get("first_target"), 0.0)
+        final = safe_float(plan.get("final_target"), 0.0)
+        trailing = safe_float(plan.get("trailing_reference"), 0.0)
+        try:
+            max_days = int(plan.get("max_holding_days") or 0)
+        except (TypeError, ValueError):
+            max_days = 0
+        if entry <= 0 or stop <= 0 or stop >= entry:
+            return "硬止损价格无效"
+        if first <= entry or final < first:
+            return "分批止盈目标无效"
+        if trailing <= 0:
+            return "移动止盈参考价无效"
+        if not 1 <= max_days <= 3:
+            return "时间止损必须为 1-3 个交易日"
+        if plan.get("conservative_same_day_order") != "stop_first":
+            return "缺少同日双触发时止损优先约定"
+        required_rules = {
+            "hard_stop", "news_invalidation", "market_retreat", "theme_invalidation",
+            "trend_break", "first_target", "final_target", "trailing_stop", "time_stop",
+        }
+        rules = plan.get("rules") or []
+        actual_rules = {
+            str(rule.get("rule_type")) for rule in rules if isinstance(rule, dict)
+        }
+        missing = sorted(required_rules - actual_rules)
+        if missing:
+            return f"缺少退出规则 {','.join(missing)}"
+        return ""
 
     def _judge_trend_only(
         self,
@@ -394,15 +514,64 @@ class RecommendationGate:
     def _phase_allowed(self, strategy_name: str, sig: StrategySignal) -> bool:
         if not sig.respect_market_phase and sig.allow_when_phase_forbids:
             return True
-        # 策略名与阶段 forbidden 做模糊匹配
+        role = str((sig.raw_features or {}).get("role") or "")
+        core_role = role in ("龙头", "中军", "leader", "core")
+        tokens = self._strategy_phase_tokens(strategy_name)
         for forbidden in self.forbidden_strategies:
-            if forbidden in strategy_name or strategy_name in forbidden:
+            f = str(forbidden)
+            if f in strategy_name or strategy_name in f:
                 return False
+            # 策略→阶段语义映射：让「连板梯队 × 禁止追涨/接力」这类跨命名的
+            # 阶段禁令真正生效（此前仅做名字子串匹配，几乎从不命中）。
+            # 「后排/杂毛/高位」类禁令只针对非核心角色（龙头/中军豁免）：
+            # 阶段设计的本意是「高潮期只参与核心、禁后排」，而非全禁。
+            rear_only = ("后排" in f) or ("杂毛" in f) or ("高位" in f)
+            if rear_only and core_role:
+                continue
+            for token in tokens:
+                if token and (token in f or f in token):
+                    return False
         return True
 
+    # 策略池名 → 市场阶段禁令语义词表（engine/market_phase.py 的 forbidden 措辞）
+    STRATEGY_PHASE_TOKENS: dict[str, tuple[str, ...]] = {
+        "题材龙头": ("题材龙头", "龙头", "追涨", "短线进攻", "接力"),
+        "连板梯队": ("连板", "接力", "追涨", "短线进攻", "高位"),
+        "趋势回踩": ("趋势", "强趋势"),
+        "超跌反弹": ("超跌反弹", "低位反转", "低位修复"),
+        "小盘优质": ("小盘优质",),
+        "大市值低波": ("防守", "红利", "低波", "大市值"),
+        "事件驱动": ("事件",),
+    }
+
+    def _strategy_phase_tokens(self, strategy_name: str) -> tuple[str, ...]:
+        tokens = self.STRATEGY_PHASE_TOKENS.get(str(strategy_name or ""), ())
+        enforce = bool(
+            (self.cfg.get("strategy_framework", {}).get("gate", {}) or {}).get(
+                "enforce_phase_strategy_map", True
+            )
+        )
+        return tokens if enforce else ()
+
     def _strategy_requires_fund_flow(self, strategy_name: str) -> bool:
+        gate_cfg = (self.cfg.get("strategy_framework", {}).get("gate", {}) or {})
+        if not bool(gate_cfg.get("require_fund_flow", True)):
+            return False
         s = str(strategy_name or "").lower()
         return any(token in s for token in ("fund", "flow", "资金", "主力", "北向"))
+
+    # 进攻型策略池：市场趋势走弱（指数 < MA20）时整体降观察
+    ATTACK_STRATEGIES = frozenset({"题材龙头", "连板梯队", "趋势回踩", "事件驱动", "小盘优质"})
+
+    def _market_regime_cached(self) -> Optional[dict[str, Any]]:
+        """同一次扫描内缓存市场状态（计算/取数成本远高于候选数）。"""
+        if self._market_regime_cache is None:
+            hook = getattr(self.dl, "market_regime", None)
+            try:
+                self._market_regime_cache = hook(self.date) if callable(hook) else None
+            except Exception:  # noqa: BLE001
+                self._market_regime_cache = None
+        return self._market_regime_cache
 
     def _build_item(self, sig: StrategySignal, cand: Optional[StockCandidate]) -> dict[str, Any]:
         item = sig.to_dict()

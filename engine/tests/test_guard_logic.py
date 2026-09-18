@@ -105,6 +105,32 @@ def test_watch_on_missing_valuation():
 
 
 def test_guard_uncovered_financial_candidates_are_watch_only():
+    """财务数据源可用时，超出覆盖上限的候选仍降观察。"""
+    spot = pd.DataFrame({
+        "代码": ["000001", "000002"], "名称": ["A", "B"],
+        "市盈率-动态": [20, 20], "市净率": [2, 2],
+    })
+    fin = pd.DataFrame({
+        "选项": ["净利润"], "日期": ["2026-06-30"], "净利润": [1.0e8],
+        "资产负债率": [40.0],
+    })
+    guard = QuantGuard(
+        StubDL(spot, fin_df=fin),
+        {
+            "exclude_new_days": 0,
+            "financial_check_limit": 1,
+            "workers": 2,
+            "financial_risk": {"exclude_loss": True, "debt_ratio_max": 0.9},
+        },
+    )
+    result = guard.filter([make_candidate(code="000001"), make_candidate(code="000002")])
+    assert len(result.kept) == 1
+    assert len(result.watch) == 1
+    assert any("财务排雷未覆盖" in flag for flag in result.watch[0].risk_flags)
+
+
+def test_guard_financial_source_unavailable_does_not_demote_candidates():
+    """财务数据源整体不可用（如回放档案）时不再把「未排雷」当成候选问题。"""
     spot = pd.DataFrame({
         "代码": ["000001", "000002"], "名称": ["A", "B"],
         "市盈率-动态": [20, 20], "市净率": [2, 2],
@@ -119,9 +145,8 @@ def test_guard_uncovered_financial_candidates_are_watch_only():
         },
     )
     result = guard.filter([make_candidate(code="000001"), make_candidate(code="000002")])
-    assert len(result.kept) == 1
-    assert len(result.watch) == 1
-    assert any("财务排雷未覆盖" in flag for flag in result.watch[0].risk_flags)
+    assert len(result.kept) == 2
+    assert len(result.watch) == 0
 
 
 def test_anti_chase_reuses_technical_kline_without_network_call():

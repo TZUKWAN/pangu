@@ -69,6 +69,10 @@ class QuantGuard:
         self.debt_max = fcfg.get("debt_ratio_max", 0.80)
         self.financial_check_limit = max(0, int(self.cfg.get("financial_check_limit", 40)))
         self.workers = max(1, int(self.cfg.get("workers", 8)))
+        # 回放等场景档案不含估值/财务数据时显式放行（不伪装成检查通过，
+        # 由 pipeline 在结果中标注 valuation_checked=False）。
+        self.allow_missing_valuation = bool(self.cfg.get("allow_missing_valuation", False))
+        self._financial_data_available: Optional[bool] = None
 
     # ------------------------------------------------------------------ #
     def filter(self, candidates: list[StockCandidate], date: Optional[str] = None) -> GuardResult:
@@ -80,6 +84,17 @@ class QuantGuard:
         if len(spot) > 0:
             code_col = _find_col(spot, ["代码"]) or spot.columns[1]
             spot_map = {str(r[code_col]).strip(): r for _, r in spot.iterrows()}
+
+        # 探测财务数据源可用性：完全不可用（如回放档案）时不再把
+        # 「未排雷」当成候选自身的问题反复降级。
+        if self._financial_data_available is None:
+            self._financial_data_available = False
+            if candidates and (self.exclude_loss or self.debt_max < 1.0):
+                try:
+                    probe = self.dl.financial_indicator(candidates[0].code)
+                    self._financial_data_available = len(probe) > 0
+                except Exception:  # noqa: BLE001
+                    self._financial_data_available = False
 
         def _evaluate(args: tuple[int, StockCandidate]):
             index, candidate = args
@@ -156,10 +171,12 @@ class QuantGuard:
             pe_missing = pd.isna(pe)
             pb_missing = pd.isna(pb)
             if pe_missing and pb_missing:
-                watch_reasons.append("估值数据缺失")
+                if not self.allow_missing_valuation:
+                    watch_reasons.append("估值数据缺失")
             else:
                 if pe_missing:
-                    watch_reasons.append("PE数据缺失")
+                    if not self.allow_missing_valuation:
+                        watch_reasons.append("PE数据缺失")
                 elif not pd.isna(pe):
                     if pe < self.pe_min:
                         if self.exclude_loss:
@@ -168,7 +185,8 @@ class QuantGuard:
                         return f"估值过高（PE={pe:.1f}）"
 
                 if pb_missing:
-                    watch_reasons.append("PB数据缺失")
+                    if not self.allow_missing_valuation:
+                        watch_reasons.append("PB数据缺失")
                 elif not pd.isna(pb):
                     if pb > self.pb_max:
                         return f"PB 过高（PB={pb:.1f}）"
@@ -182,12 +200,15 @@ class QuantGuard:
                 return f"次新股（上市不足 {self.exclude_new_days} 日）"
 
         # 5. 财务风险（慢，放最后；逐只取）
-        if check_financial and (self.exclude_loss or self.debt_max < 1.0):
+        financial_required = self.exclude_loss or self.debt_max < 1.0
+        if check_financial and financial_required:
             fin_reason = self._check_financial(c.code)
             if fin_reason:
                 return fin_reason
-        elif self.exclude_loss or self.debt_max < 1.0:
-            watch_reasons.append("财务排雷未覆盖，仅观察")
+        elif financial_required:
+            # 覆盖范围之外：只有数据源本身可用时才把「未排雷」当降级理由
+            if self._financial_data_available and not self.allow_missing_valuation:
+                watch_reasons.append("财务排雷未覆盖，仅观察")
 
         if watch_reasons:
             return None, ";".join(watch_reasons)

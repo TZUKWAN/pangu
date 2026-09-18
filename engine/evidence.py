@@ -18,6 +18,7 @@ class CandidateEvidence:
     news_evidence: dict[str, Any] = field(default_factory=dict)
     anti_chase: dict[str, Any] = field(default_factory=dict)
     entry_plan: dict[str, Any] = field(default_factory=dict)
+    exit_plan: dict[str, Any] = field(default_factory=dict)
     decision: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -33,6 +34,7 @@ class CandidateEvidence:
             "news_evidence": self.news_evidence,
             "anti_chase": self.anti_chase,
             "entry_plan": self.entry_plan,
+            "exit_plan": self.exit_plan,
             "decision": self.decision,
             "raw": self.raw,
         }

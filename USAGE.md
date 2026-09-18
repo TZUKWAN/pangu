@@ -14,7 +14,8 @@ python -m engine.repl
 ### 第一次用 / 每个交易日盘后
 
 ```bash
-python -m engine.cli rps-build --workers 10    # 预计算全市场真实 RPS（必做）
+python -m engine.cli rps-build                 # 预计算真实 RPS（必做；默认本地档案直算，秒级）
+python -m engine.cli rps-build --live          # 强制走网络逐股路径（仅补档案缺口时用）
 ```
 
 > 未运行 RPS 预计算时，系统只会输出观察池，不会生成正式推荐。
@@ -42,6 +43,7 @@ python -m engine.cli doctor                    # 检查 all_spot / kline / RPS /
 
 ```bash
 python -m engine.cli scan                      # 输出 JSON（含 source_status / final_recommendations / watchlist）
+python -m engine.cli scan --date 20260618 --replay   # 历史回放模式（PIT-safe，本地档案数据面）
 python -m engine.cli report                    # 生成 Markdown 简报
 ```
 
@@ -113,28 +115,35 @@ python -m engine.cli daily --dry-run           # 只检查配置/通知
 
 ## 验证状态
 
-- 277 个纯逻辑单元测试全过：`python -m pytest engine/tests/ -q --ignore=engine/tests/test_pipeline_live.py`
+- 470 个纯逻辑单元测试全过：`python -m pytest engine/tests/ -q --ignore=engine/tests/test_pipeline_live.py`
 - Live 冒烟测试：`python -m pytest engine/tests/test_pipeline_live.py -q`（需网络）
+- 历史回放回测（真实成功率度量）：`python -m engine.cli replay-backtest --start 20260410 --end 20260720`
+- 参数网格搜索：`python tools/run_optimize.py --start 20260601 --end 20260630 --workers 4`
 
 ## 重要提醒
 
 - 系统是**决策辅助工具，不保证收益，不自动交易**。
 - 所有概率/推荐度字段未经过样本外回测校准时，**不得视为真实胜率**。
 - 短线个股天然高风险，所有输出仅作为次日开盘前的观察参考。
-- 每个交易日盘后务必跑 `rps-build` 更新真实 RPS。
+- 每个交易日盘后务必跑 `rps-build` 更新真实 RPS（本地档案覆盖范围内的历史日期走档案直算）。
+- **不存在 ≥99% 的真实预测成功率**：回测报告中的成功率数字为净费用后口径，
+  样本不足时会明确标注 `insufficient_sample`，请勿外推。
 
 ## 命令速查
 
 | 命令 | 作用 |
 |------|------|
 | `python -m engine.repl` | 交互式菜单 |
-| `python -m engine.cli rps-build` | 预计算真实 RPS |
+| `python -m engine.cli rps-build` | 预计算真实 RPS（档案直算优先） |
 | `python -m engine.cli sentiment` | 情绪温度 |
 | `python -m engine.cli market-phase` | 市场阶段 |
 | `python -m engine.cli pools` | 七大策略池 |
 | `python -m engine.cli doctor` | 数据源与系统健康检查 |
 | `python -m engine.cli scan` | 完整选股链路 → JSON |
+| `python -m engine.cli scan --replay` | 历史回放选股（PIT-safe） |
 | `python -m engine.cli report` | 生成 Markdown 报告 |
+| `python -m engine.cli replay-backtest` | 历史回放回测（真实成功率） |
+| `python tools/run_optimize.py` | 参数网格搜索 |
 | `python -m engine.cli daily` | 每日盘后一键调度 |
 | `python -m engine.web` | 启动 Web 看板 |
 

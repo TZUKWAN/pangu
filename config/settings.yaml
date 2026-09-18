@@ -106,6 +106,12 @@ entry_exit:
   atr_multiplier: 2.0           # ATR 止损倍数（entry - N×ATR）
   min_trade_amount: 10000       # 最小成交金额约束（元，避免低价股算不出股数）
   min_shares: 100               # 最小股数约束（1 手，A股按 100 股取整）
+  entry_zone_width: 0.04        # 入场区间半宽（±4%；次日开盘落在区间内才成交，经回放回测校准）
+  primary_max_below_pct: 0.08   # 主买点（回踩位）允许低于现价的最大深度
+  primary_style_preference: breakout_confirm
+  # 主买点风格：breakout_confirm=突破确认（经 20260410-20260724 回放回测校准，
+  # 成交率与成功率均优于回踩低吸）；置空 "" 恢复"优先回踩低吸"
+  first_target_rr: 2.0          # 第一止盈目标盈亏比（调低→更早减半兑现，胜率↑单笔盈利↓）
 
 # ============ 结构化 P0 因子（龙虎榜/公告/研报/两融/北向/解禁等）============
 structured_data:
@@ -159,12 +165,13 @@ strategy_framework:
   enabled: true                 # 启用新版策略框架
   expensive_pool_limit: 20     # 需要逐股日 K/财务的单策略最大审计数
   pools:
-    - 题材龙头
-    - 连板梯队
-    - 趋势回踩
+    # 默认池组合经 20260410-20260901 全窗回放回测校准：42.3% 成功率/PF 0.99（26 笔，
+    # 下跌市盈亏平衡），显著优于全 7 池（34%/PF 0.59，-1.3%/笔）。
+    # 进攻型池（题材龙头/连板梯队/趋势回踩/小盘优质）在指数弱势期被
+    # market_regime_filter 拦截，若想手动启用请把下面的注释行换回：
+    #   [题材龙头, 连板梯队, 趋势回踩, 超跌反弹, 小盘优质, 大市值低波, 事件驱动]
     - 超跌反弹
-    - 小盘优质
-    - 大市值低波              # 红利数据接入前暂用此名
+    - 大市值低波
     - 事件驱动
   small_quality:
     max_circ_mv_yi: 100         # 小盘优质池流通市值上限（亿元）
@@ -177,6 +184,15 @@ strategy_framework:
     require_real_rps: true      # 正式推荐必须基于真实 RPS
     require_fund_flow: true     # 正式推荐必须确认资金流状态 ok
     require_entry_exit: true    # 必须成功计算买卖点
+    soft_entry_chase: true      # 追价型买点仅提示不拦截（条件单未触发即不成交）
+    enforce_phase_strategy_map: true
+    # 市场阶段禁令按「策略池→阶段语义」映射生效（修复：此前按名字子串匹配几乎不命中）
+    market_regime_filter: true
+    # 市场趋势状态过滤：指数收盘 <= MA20 时进攻型策略池（题材龙头/连板梯队/
+    # 趋势回踩/事件驱动/小盘优质）降观察；市场数据不可得时自动停用
+    market_regime_strict: false # true=还要求 MA20 上行（更保守）
+    min_temperature: 0          # 情绪温度门槛（0=不启用）
+    min_final_score: 0          # 信号分门槛（0=不启用）
 
 # ============ 选股输出 ============
 output:
@@ -193,6 +209,24 @@ backtest:
   commission_rate: 0.00025      # 双边佣金费率
   min_commission: 5.0           # 单笔最低佣金（元）
   slippage_pct: 0.001           # 买卖滑点（成交价比例）
+
+# ============ 短期 Agent 严格成功率验收 ============
+short_term_replay:
+  context_archive_dir: data/short_term_context
+  entry_window_days: 1          # 盘后信号只允许下一交易日触发买点
+  capital_per_trade: 100000     # 每笔统一名义资金，避免仓位差异扭曲统计
+  lot_size: 100
+  commission_rate: 0.0003       # 券商佣金可按真实账户调整，双边计收
+  min_commission: 5.0
+  stamp_duty_rate: 0.0005       # 卖出单边；2023-08-28 起证券交易印花税减半征收
+  slippage_bps: 10.0            # 买卖各 10bp 保守滑点
+  target_win_rate: 0.85
+  min_trades: 100               # 禁止用极小样本宣称 85%
+  min_trade_dates: 30
+  min_execution_rate: 0.25      # 防止大量“不成交”粉饰胜率
+  min_profit_factor: 1.20
+  max_drawdown_limit: 0.15
+  require_causal_context: true  # 新闻/情绪/题材必须来自精确日期归档
 
 # ============ 独立 Agent（LLM 大脑）============
 llm:

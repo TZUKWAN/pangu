@@ -30,7 +30,21 @@ def _full_candidate() -> dict:
         "entry_exit": {
             "buy_points": [{"is_primary": True, "price": 12.30, "type": "突破", "condition": "放量"}],
             "stop_loss": {"price": 11.50, "method": "ATR"},
-            "take_profit": [{"price": 14.00, "method": "1:2"}],
+            "take_profit": [{"price": 14.00, "method": "1:2"}, {"price": 15.00, "method": "1:3"}],
+            "exit_plan": {
+                "entry_price": 12.30, "initial_stop": 11.50,
+                "first_target": 14.00, "final_target": 15.00,
+                "trailing_reference": 12.40,
+                "max_holding_days": 3, "conservative_same_day_order": "stop_first",
+                "rules": [
+                    {"rule_type": "trailing_stop", "condition": "盈利后收盘跌破 MA10"},
+                    {"rule_type": "time_stop", "condition": "持有满 3 个交易日仍未兑现，收盘退出"},
+                    {"rule_type": "news_invalidation", "condition": "出现直接负面事件"},
+                    {"rule_type": "market_retreat", "condition": "市场进入冰点或退潮"},
+                    {"rule_type": "theme_invalidation", "condition": "题材催化被证伪"},
+                    {"rule_type": "trend_break", "condition": "跌破 MA20 或放量跌破 MA10"},
+                ],
+            },
             "position": {"shares": 300, "risk_pct": 1.5},
         },
         "structured_factors": {
@@ -155,6 +169,10 @@ def test_new_report_renders_only_gate_final_with_conditional_entry():
     assert "正式推荐（已通过完整证据链）" in md
     assert "条件买点" in md
     assert "主买点" not in md
+    assert "第一卖点" in md and "第二卖点" in md
+    assert "移动止盈" in md and "时间卖点" in md
+    assert "新闻证伪" in md and "情绪退潮" in md and "题材失效" in md and "趋势破位" in md
+    assert "同一交易日同时触发止损与止盈时，按止损优先" in md
 
 
 def test_northbound_market_level():

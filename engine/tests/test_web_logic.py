@@ -193,6 +193,21 @@ def test_recommendation_performance_endpoint_returns_empty_journal(client, monke
     assert "horizons" in data["performance"]
 
 
+def test_short_term_performance_endpoint_never_claims_85_without_sample(client, monkeypatch, tmp_path):
+    from engine.web import server
+
+    db_path = tmp_path / "strict_journal.db"
+    monkeypatch.setattr(server, "load_config", lambda: {"output": {"db_path": str(db_path)}})
+    monkeypatch.setattr(server, "build_data_loader", lambda cfg: object())
+
+    response = client.get("/api/recommendations/short-term-performance?days=3650")
+    assert response.status_code == 200
+    acceptance = response.json()["performance"]["acceptance"]
+    assert acceptance["executed_count"] == 0
+    assert acceptance["verified_success_rate_85"] is False
+    assert acceptance["verification_status"] == "insufficient_sample"
+
+
 def test_recommendation_record_latest_endpoint_writes_journal(client, monkeypatch, tmp_path):
     """/api/recommendations/record-latest records the current report for later review."""
     from engine.web import server
@@ -205,11 +220,12 @@ def test_recommendation_record_latest_endpoint_writes_journal(client, monkeypatc
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert data["recorded"]["recorded"] == 1
+    # 完整决策日志同时记录候选与 rejected，避免只保留幸存者。
+    assert data["recorded"]["recorded"] == 2
     assert data["recorded"]["run_date"] == "20260630"
 
     perf = client.get("/api/recommendations/performance?days=365&only_recommended=false").json()["performance"]
-    assert perf["total"] == 1
+    assert perf["total"] == 2
 
     recommended_perf = client.get("/api/recommendations/performance?days=365").json()["performance"]
     assert recommended_perf["only_recommended"] is True
@@ -654,7 +670,10 @@ def test_scan_degraded_does_not_update_latest_or_main_report(client, monkeypatch
     monkeypatch.setattr(server, "_latest_result", initial_latest)
     monkeypatch.setattr(server, "save_report", fake_save_report)
     monkeypatch.setattr(server, "get_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(server, "load_config", lambda: {"output": {"report_dir": str(tmp_path)}})
+    monkeypatch.setattr(server, "load_config", lambda: {
+        "output": {"report_dir": str(tmp_path), "db_path": str(tmp_path / "journal.db")},
+        "short_term_replay": {"context_archive_dir": str(tmp_path / "contexts")},
+    })
 
     r = client.post("/api/scan")
     assert r.status_code == 200
@@ -710,7 +729,10 @@ def test_scan_ok_updates_latest_and_main_report(client, monkeypatch, tmp_path):
     monkeypatch.setattr(server, "_latest_result", None)
     monkeypatch.setattr(server, "save_report", fake_save_report)
     monkeypatch.setattr(server, "get_pipeline", lambda: FakePipeline())
-    monkeypatch.setattr(server, "load_config", lambda: {"output": {"report_dir": str(tmp_path)}})
+    monkeypatch.setattr(server, "load_config", lambda: {
+        "output": {"report_dir": str(tmp_path), "db_path": str(tmp_path / "journal.db")},
+        "short_term_replay": {"context_archive_dir": str(tmp_path / "contexts")},
+    })
 
     r = client.post("/api/scan")
     task_id = r.json()["task_id"]

@@ -29,16 +29,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Optional
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional
 
 import pandas as pd
 
-from .data_loader import DataLoader
+if TYPE_CHECKING:
+    from .data_loader import DataLoader
 
 logger = logging.getLogger("pangu.news_fetcher")
 
@@ -73,6 +76,19 @@ class NewsFlash:
             "subjects": self.subjects, "stocks": self.stocks, "source": self.source,
             "content_hash": self.content_hash, "entities": self.entities,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "NewsFlash":
+        return cls(
+            time=str(data.get("time") or ""),
+            content=str(data.get("content") or ""),
+            important=bool(data.get("important", False)),
+            subjects=list(data.get("subjects") or []),
+            stocks=list(data.get("stocks") or []),
+            source=str(data.get("source") or ""),
+            content_hash=str(data.get("content_hash") or ""),
+            entities=list(data.get("entities") or []),
+        )
 
 
 def _content_hash(content: str) -> str:
@@ -122,6 +138,16 @@ class StockNews:
             "source": self.source, "time": self.time,
         }
 
+    @classmethod
+    def from_dict(cls, code: str, data: dict[str, Any]) -> "StockNews":
+        return cls(
+            code=code,
+            title=str(data.get("title") or ""),
+            content=str(data.get("content") or ""),
+            source=str(data.get("source") or ""),
+            time=str(data.get("time") or ""),
+        )
+
 
 @dataclass
 class NewsResult:
@@ -168,6 +194,46 @@ class NewsResult:
             "source_state": self.source_state,
         }
 
+    def to_archive_dict(self) -> dict[str, Any]:
+        """Lossless local archive payload used for causal historical replay."""
+        return {
+            "schema_version": 1,
+            "date": self.date,
+            "flashes": [f.to_dict() for f in self.flashes],
+            "stock_news": {
+                code: [n.to_dict() for n in news]
+                for code, news in self.stock_news.items()
+            },
+            "hot_themes": [list(item) for item in self.hot_themes],
+            "warnings": list(self.warnings),
+            "source_state": self.source_state,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "NewsResult":
+        result = cls(date=str(data.get("date") or ""))
+        result.flashes = [
+            NewsFlash.from_dict(item)
+            for item in (data.get("flashes") or [])
+            if isinstance(item, dict)
+        ]
+        result.stock_news = {
+            str(code): [
+                StockNews.from_dict(str(code), item)
+                for item in (items or [])
+                if isinstance(item, dict)
+            ]
+            for code, items in (data.get("stock_news") or {}).items()
+        }
+        result.hot_themes = [
+            (str(item[0]), int(item[1]))
+            for item in (data.get("hot_themes") or [])
+            if isinstance(item, (list, tuple)) and len(item) >= 2
+        ]
+        result.warnings = list(data.get("warnings") or [])
+        result.source_state = dict(data.get("source_state") or {})
+        return result
+
 
 class NewsFetcher:
     """实时新闻聚合器。"""
@@ -178,6 +244,9 @@ class NewsFetcher:
         ncfg = self.cfg.get("news", {})
         self.flash_limit = ncfg.get("flash_limit", 50)       # 电报最多取条数
         self.stock_news_limit = ncfg.get("stock_news_per_code", 5)  # 每只票最多新闻数
+        self.stock_news_candidate_limit = int(ncfg.get("stock_news_candidate_limit", 20))
+        self.archive_dir = Path(ncfg.get("archive_dir", "data/news_archive"))
+        self.cache_ttl = timedelta(minutes=float(ncfg.get("cache_ttl_minutes", 30)))
         # 题材关键词（从电报/新闻里提取热度）
         self.theme_keywords = ncfg.get("theme_keywords", _DEFAULT_THEME_KEYWORDS)
 
@@ -189,17 +258,56 @@ class NewsFetcher:
     ) -> NewsResult:
         """拉取今日新闻聚合。"""
         date = date or datetime.now().strftime("%Y%m%d")
+        date = str(date).replace("-", "")
+        today = datetime.now().strftime("%Y%m%d")
+
+        archived = self._load_archive(date)
+        if date != today:
+            if archived is not None:
+                archived.source_state["archive"] = {
+                    "ok": True,
+                    "status": "ok",
+                    "mode": "exact_date",
+                    "date": date,
+                }
+                return archived
+            result = NewsResult(date=date)
+            warning = f"缺少 {date} 精确日期新闻归档，禁止用当前新闻替代历史证据"
+            result.warnings.append(warning)
+            result.source_state["archive"] = {
+                "ok": False,
+                "status": "unavailable",
+                "mode": "exact_date_required",
+                "date": date,
+                "error": warning,
+            }
+            return result
+
+        archive_path = self._archive_path(date)
+        if archived is not None and archive_path.exists():
+            age = datetime.now() - datetime.fromtimestamp(archive_path.stat().st_mtime)
+            if age <= self.cache_ttl:
+                archived.source_state["archive"] = {
+                    "ok": True,
+                    "status": "ok",
+                    "mode": "fresh_cache",
+                    "date": date,
+                }
+                if candidates:
+                    self.enrich_stock_news(archived, candidates, persist=True)
+                return archived
+
         result = NewsResult(date=date)
 
         # 1. 财联社电报（主源）
         try:
             before = len(result.flashes)
             self._fetch_flashes(result, date)
-            result.source_state["cls"] = {"ok": True, "count": len(result.flashes) - before, "error": ""}
+            result.source_state["cls"] = {"ok": True, "status": "ok", "count": len(result.flashes) - before, "error": ""}
         except Exception as e:  # noqa: BLE001
             err = str(e)
             result.warnings.append(f"财联社电报取数失败: {err}")
-            result.source_state["cls"] = {"ok": False, "count": 0, "error": err}
+            result.source_state["cls"] = {"ok": False, "status": "failed", "count": 0, "error": err}
             logger.warning("财联社电报失败: %s", e)
 
         # 多源兜底：华尔街见闻 → 金十 → 雪球热门 → 格隆汇 → 新浪
@@ -216,34 +324,91 @@ class NewsFetcher:
             try:
                 before = len(result.flashes)
                 fetch_fn(result)
-                result.source_state[source_id] = {"ok": True, "count": len(result.flashes) - before, "error": ""}
+                result.source_state[source_id] = {"ok": True, "status": "ok", "count": len(result.flashes) - before, "error": ""}
             except Exception as e:  # noqa: BLE001
                 err = str(e)
-                result.source_state[source_id] = {"ok": False, "count": 0, "error": err}
+                result.source_state[source_id] = {"ok": False, "status": "failed", "count": 0, "error": err}
                 logger.debug("%s 失败: %s", fetch_fn.__name__, e)
         self._dedup_flashes(result)
 
         # 2. 个股关联新闻（针对候选股）
         if candidates:
-            for c in candidates[:10]:  # 限制最多 10 只，避免过多请求
-                code = str(c.get("code", "")).strip()
-                if not code:
-                    continue
-                try:
-                    news = self._fetch_stock_news(code)
-                    if news:
-                        result.stock_news[code] = news
-                except Exception as e:  # noqa: BLE001
-                    logger.debug("个股新闻 %s 失败: %s", code, e)
+            self.enrich_stock_news(result, candidates, persist=False)
 
         # 3. 题材热度（从电报+新闻文本提取关键词频次）
         result.hot_themes = self._extract_hot_themes(result)
+        self._save_archive(result)
 
         logger.info(
             "新闻聚合完成 %s：快讯 %d 条，个股新闻 %d 只，热门题材 %d 个",
             date, len(result.flashes), len(result.stock_news), len(result.hot_themes),
         )
         return result
+
+    def enrich_stock_news(
+        self,
+        result: NewsResult,
+        candidates: list[dict[str, Any]],
+        *,
+        persist: bool = True,
+    ) -> NewsResult:
+        """Attach candidate headlines and persist the enriched exact-date archive by default."""
+        for candidate in candidates[: self.stock_news_candidate_limit]:
+            code = str(candidate.get("code", "")).strip()
+            if not code or code in result.stock_news:
+                continue
+            try:
+                news = self._fetch_stock_news(code)
+                if news:
+                    result.stock_news[code] = news
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("个股新闻 %s 失败: %s", code, exc)
+        result.hot_themes = self._extract_hot_themes(result)
+        if persist:
+            self._save_archive(result)
+        return result
+
+    def _archive_path(self, date: str) -> Path:
+        return self.archive_dir / f"{date}.json"
+
+    def _load_archive(self, date: str) -> Optional[NewsResult]:
+        path = self._archive_path(date)
+        if not path.exists():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict) or str(data.get("date") or "") != date:
+                return None
+            return NewsResult.from_dict(data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("新闻归档读取失败 %s: %s", path, exc)
+            return None
+
+    def _save_archive(self, result: NewsResult) -> None:
+        try:
+            self.archive_dir.mkdir(parents=True, exist_ok=True)
+            path = self._archive_path(result.date)
+            temp = path.with_suffix(".tmp")
+            result.source_state["archive"] = {
+                "ok": True,
+                "status": "ok",
+                "mode": "persisted_exact_date",
+                "date": result.date,
+            }
+            temp.write_text(
+                json.dumps(result.to_archive_dict(), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temp.replace(path)
+        except Exception as exc:  # noqa: BLE001
+            result.source_state["archive"] = {
+                "ok": False,
+                "status": "failed",
+                "mode": "persist_failed",
+                "date": result.date,
+                "error": str(exc),
+            }
+            logger.warning("新闻归档写入失败 %s: %s", result.date, exc)
 
     # ------------------------------------------------------------------ #
     def _fetch_flashes(self, result: NewsResult, date: str) -> None:
@@ -435,6 +600,7 @@ class NewsFetcher:
         result.flashes.sort(key=lambda f: f.time, reverse=True)
         result.source_state["dedup"] = {
             "ok": True,
+            "status": "ok",
             "before": before,
             "after": len(result.flashes),
             "removed": before - len(result.flashes),

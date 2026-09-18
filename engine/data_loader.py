@@ -45,19 +45,25 @@ logger = logging.getLogger("pangu.data")
 
 # akshare import 失败时给出清晰提示，而不是晦涩的 ModuleNotFoundError
 try:
+    if os.environ.get("PANGU_DISABLE_AKSHARE", "").lower() in {"1", "true", "yes"}:
+        raise ImportError("akshare disabled by PANGU_DISABLE_AKSHARE")
     import akshare as ak
     _AK_VERSION = getattr(ak, "__version__", "unknown")
     logger.debug("akshare %s loaded", _AK_VERSION)
-except ImportError:  # pragma: no cover - 环境问题，引导用户装依赖
+except ImportError:  # pragma: no cover - 环境问题/显式禁用
     ak = None
     _AK_VERSION = None
 
-# 可选的 adata 数据源，作为 akshare 失败时的 fallback
+# 可选的 adata 数据源，作为 akshare 失败时的 fallback。adata 的旧版
+# py_mini_racer 在部分 Python 3.14 Windows 进程会原生崩溃；研究/离线命令
+# 可显式禁用它，而不影响其他真实行情提供者。
 try:
+    if os.environ.get("PANGU_DISABLE_ADATA", "").lower() in {"1", "true", "yes"}:
+        raise ImportError("adata disabled by PANGU_DISABLE_ADATA")
     import adata as _adata
     _ADATA_VERSION = getattr(_adata, "__version__", "unknown")
     logger.debug("adata %s loaded", _ADATA_VERSION)
-except ImportError:  # pragma: no cover - 可选依赖
+except ImportError:  # pragma: no cover - 可选依赖/显式禁用
     _adata = None
     _ADATA_VERSION = None
 
@@ -578,6 +584,52 @@ class DataLoader:
         self._fin_cache[symbol] = (now, df.copy())
         self._mem_put(f"fin:{symbol}", df)
         return df.copy()
+
+    # ------------------------------------------------------------------ #
+    # 市场状态（推荐闸门的市场趋势过滤器用）
+    # ------------------------------------------------------------------ #
+    def market_regime(self, date: Optional[str] = None, index_code: str = "sh000001") -> Optional[dict[str, Any]]:
+        """市场指数趋势状态：收盘是否在 MA20 上方。
+
+        实时模式取腾讯指数日 K（sh000001）；无法取得数据时返回 None
+        （调用方据此停用过滤器，不猜测）。结果按日缓存。
+        """
+        mem = self._mem_get(f"regime:{index_code}")
+        if mem is not None and (date is None or mem.get("asof") == date or mem.get("asof", "") <= (date or "")):
+            if date is None or mem.get("asof") == date:
+                return dict(mem)
+        try:
+            from .tdx_source import tencent_kline_qfq
+            k = tencent_kline_qfq(index_code, days=70)
+        except Exception:  # noqa: BLE001
+            return None
+        if k is None or len(k) < 21:
+            return None
+        closes = pd.to_numeric(k.get("收盘"), errors="coerce").dropna()
+        dates = [str(d).replace("-", "") for d in k.get("日期", [])]
+        if len(closes) < 21:
+            return None
+        ma20 = closes.rolling(20).mean()
+        asof = date or dates[-1]
+        picked = None
+        for i in range(len(dates) - 1, -1, -1):
+            if dates[i] <= asof and not pd.isna(ma20.iloc[i]):
+                picked = i
+                break
+        if picked is None:
+            return None
+        ma20_now = float(ma20.iloc[picked])
+        ma20_prev = float(ma20.iloc[picked - 5]) if picked >= 5 and not pd.isna(ma20.iloc[picked - 5]) else ma20_now
+        result = {
+            "asof": dates[picked],
+            "close": float(closes.iloc[picked]),
+            "ma20": ma20_now,
+            "ma20_rising": bool(ma20_now > ma20_prev),
+            "above_ma20": bool(closes.iloc[picked] > ma20_now),
+            "index": index_code,
+        }
+        self._mem_put(f"regime:{index_code}", result)
+        return dict(result)
 
 
 def _guess_market(symbol: str) -> str:

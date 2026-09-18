@@ -723,13 +723,23 @@ def _cache_status() -> dict[str, Any]:
         cache_dir = Path((cfg.get("data") or {}).get("cache_dir", "data/cache"))
         if not cache_dir.exists():
             return {"status": "missing", "cache_dir": str(cache_dir), "files": 0}
-        files = [p for p in cache_dir.glob("*") if p.is_file()]
-        latest = max((p.stat().st_mtime for p in files), default=None)
+        # Path.glob + per-file stat 在十万级缓存目录上会阻塞 API 数秒。
+        # scandir 利用目录项元数据做一次线性计数；目录 mtime 作为最近增删时间，
+        # 足以支撑治理面板的“缓存是否更新”提示，无需逐文件 stat。
+        with os.scandir(cache_dir) as entries:
+            file_count = sum(1 for entry in entries if entry.is_file(follow_symlinks=False))
+        latest = cache_dir.stat().st_mtime if file_count else None
         latest_text = (
             datetime.fromtimestamp(latest, tz=ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d %H:%M:%S")
             if latest else None
         )
-        return {"status": "ok" if files else "empty", "cache_dir": str(cache_dir), "files": len(files), "latest_cache_time": latest_text}
+        return {
+            "status": "ok" if file_count else "empty",
+            "cache_dir": str(cache_dir),
+            "files": file_count,
+            "latest_cache_time": latest_text,
+            "latest_time_semantics": "directory_entry_change",
+        }
     except Exception as e:  # noqa: BLE001
         return {"status": "unknown", "warning": f"缓存状态读取失败: {e}"}
 
@@ -1064,7 +1074,29 @@ def _enrich_response(data: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------- #
 # FastAPI 应用
 # ---------------------------------------------------------------------- #
-app = FastAPI(title="盘古 Pangu 选股看板", docs_url="/docs", redoc_url=None)
+class _NanSafeJSONResponse(JSONResponse):
+    """全局 JSON 响应：渲染前递归清洗 nan/inf。
+
+    Starlette 的 JSONResponse 用 allow_nan=False 渲染，任一端点出现 NaN
+    都会直接 500（曾发生于 /api/market/pools 的 turnover_rate）。
+    显式调用 _sanitize_floats 的端点依旧安全，这里兜底其余所有端点。
+    """
+
+    def render(self, content: Any) -> bytes:
+        return json.dumps(
+            _sanitize_floats(content),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+
+app = FastAPI(
+    title="盘古 Pangu 选股看板",
+    docs_url="/docs",
+    redoc_url=None,
+    default_response_class=_NanSafeJSONResponse,
+)
 
 
 @app.get("/")
@@ -1157,6 +1189,41 @@ async def api_recommendation_performance(
     )
     eval_result = journal.evaluate(only_recommended=only_recommended) if refresh else None
     return {"ok": True, "evaluation": eval_result, "performance": journal.summary(days=days, only_recommended=only_recommended)}
+
+
+@app.get("/api/recommendations/short-term-performance")
+async def api_short_term_recommendation_performance(
+    days: int = Query(3650, ge=1, le=3650),
+    refresh: bool = Query(False),
+):
+    """Return strict executable 1-3 day replay; never substitute close-to-close win rate."""
+    cfg = load_config()
+    from ..recommendation_journal import RecommendationJournal
+    from ..short_term_context import ShortTermContextArchive
+    archive = ShortTermContextArchive(
+        (cfg.get("short_term_replay") or {}).get("context_archive_dir", "data/short_term_context")
+    )
+    journal = RecommendationJournal(
+        cfg.get("output", {}).get("db_path", "data/pangu.db"),
+        data_loader=build_data_loader(cfg),
+    )
+    evaluation = None
+    if refresh:
+        evaluation = journal.evaluate_short_term(
+            cfg=cfg.get("short_term_replay") or {},
+            context_provider=lambda run_date, code, kline, evidence: archive.build_replay_context(
+                run_date, code, kline, evidence
+            ),
+        )
+    return {
+        "ok": True,
+        "evaluation": evaluation,
+        "performance": journal.short_term_summary(
+            days=days,
+            cfg=cfg.get("short_term_replay") or {},
+            only_recommended=True,
+        ),
+    }
 
 
 @app.post("/api/recommendations/record-latest")
@@ -1298,7 +1365,17 @@ async def api_scan(date: Optional[str] = Query(None)):
                 state.log(f"数据质量 {result.data_quality}，不更新全局 latest，可在 task.result 查看诊断报告")
             try:
                 from ..recommendation_journal import RecommendationJournal
+                from ..short_term_context import ShortTermContextArchive
                 cfg = load_config()
+                context_root = (cfg.get("short_term_replay") or {}).get(
+                    "context_archive_dir", "data/short_term_context"
+                )
+                archive = ShortTermContextArchive(context_root)
+                context_result = archive.save_pipeline_result(data)
+                state.log(
+                    f"短期因果上下文已归档：{context_result.get('date')}，"
+                    f"完整={context_result.get('complete')}"
+                )
                 journal = RecommendationJournal(
                     cfg.get("output", {}).get("db_path", "data/pangu.db"),
                     data_loader=build_data_loader(cfg),
@@ -1306,7 +1383,20 @@ async def api_scan(date: Optional[str] = Query(None)):
                 journal_result = journal.record_pipeline_result(data)
                 state.log(
                     f"推荐日志已记录：{journal_result.get('recorded', 0)} 条，"
-                    f"玄武 {journal_result.get('recommended', 0)} 条"
+                    f"正式推荐 {journal_result.get('recommended', 0)} 条"
+                )
+                strict_result = journal.evaluate_short_term(
+                    as_of=result.date,
+                    cfg=cfg.get("short_term_replay") or {},
+                    context_provider=lambda run_date, code, kline, evidence: archive.build_replay_context(
+                        run_date, code, kline, evidence
+                    ),
+                )
+                acceptance = strict_result.get("acceptance") or {}
+                state.log(
+                    f"严格1-3日复盘：{acceptance.get('verification_status', 'unknown')}，"
+                    f"成交 {acceptance.get('executed_count', 0)} 笔，"
+                    f"成功率 {safe_float(acceptance.get('observed_win_rate'), 0.0):.1%}"
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning("推荐日志写入失败: %s", e)

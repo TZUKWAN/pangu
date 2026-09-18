@@ -14,6 +14,7 @@ from engine.quant_guard import GuardResult, QuantGuard
 from engine.recommendation_gate import RecommendationGate
 from engine.strategy_pools import (
     DividendLowVolPool,
+    StrategySignal,
     EventDrivenPool,
     LimitUpPool,
     OversoldReboundPool,
@@ -172,16 +173,17 @@ class TestRecommendationGate(unittest.TestCase):
             "代码": "000001", "名称": "A", "涨跌幅": 2.0,
             "最新价": 10.0, "换手率": 3.0, "流通市值": 50e8,
         }])
-        closes = list(range(100, 121))
+        # 至少满足 MA20 + 2 根 K 线，并让候选现价与最后收盘保持一致。
+        closes = [10.0 + i * 0.1 for i in range(30)]
         dl._kline["000001"] = pd.DataFrame({
-            "close": closes,
-            "high": [c + 1 for c in closes],
-            "low": [c - 1 for c in closes],
-            "volume": [10000] * 21,
+            "收盘": closes,
+            "最高": [c + 0.1 for c in closes],
+            "最低": [c - 0.1 for c in closes],
+            "成交量": [10000] * len(closes),
         })
 
         kept = [StockCandidate(
-            code="000001", name="A", board="深市主板", close=10.0,
+            code="000001", name="A", board="深市主板", close=closes[-1],
             pct_change=2.0, turnover_rate=3.0, circ_mv_yi=50.0,
             rps=92.0, rps_mode="real", fund_inflow_days=3,
             fund_flow_status="ok", is_watchlist=False,
@@ -236,3 +238,35 @@ class TestRecommendationGate(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_strategy_signal_to_dict_sanitizes_nan():
+    """NaN/Inf 必须在 to_dict 时清洗为 None：Starlette JSONResponse 禁止非有限浮点，
+    否则 Web 端 /api/market/pools 直接 500。"""
+    import math
+
+    sig = StrategySignal(
+        strategy_name="趋势回踩", code="600000", name="t", board="沪市主板",
+        trigger_reason="x", score=70.0,
+        raw_features={"turnover_rate": float("nan"), "rps": float("inf"),
+                      "ok": 1.5, "nested": {"v": float("nan")}},
+    )
+    d = sig.to_dict()
+    rf = d["raw_features"]
+    assert rf["turnover_rate"] is None and rf["rps"] is None
+    assert rf["ok"] == 1.5 and rf["nested"]["v"] is None
+    assert not any(
+        isinstance(v, float) and not math.isfinite(v)
+        for v in _flat_values(d)
+    )
+
+
+def _flat_values(obj):
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from _flat_values(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _flat_values(v)
+    elif isinstance(obj, float):
+        yield obj

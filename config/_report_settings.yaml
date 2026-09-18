@@ -96,6 +96,22 @@ backtest:
   commission_rate: 0.00025
   min_commission: 5.0
   slippage_pct: 0.001
+short_term_replay:
+  context_archive_dir: data/short_term_context
+  entry_window_days: 1
+  capital_per_trade: 100000
+  lot_size: 100
+  commission_rate: 0.0003
+  min_commission: 5.0
+  stamp_duty_rate: 0.0005
+  slippage_bps: 10.0
+  target_win_rate: 0.85
+  min_trades: 100
+  min_trade_dates: 30
+  min_execution_rate: 0.25
+  min_profit_factor: 1.20
+  max_drawdown_limit: 0.15
+  require_causal_context: true
 llm:
   api_key: ''
   base_url: https://api.deepseek.com

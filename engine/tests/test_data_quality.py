@@ -74,14 +74,15 @@ def test_volume_amount_absent_from_candidate_but_audit_ok_is_not_degraded():
     assert reasons == []
 
 
-def test_volume_audit_degraded_marks_report_degraded():
+def test_volume_audit_degraded_no_longer_vetoes_global_quality():
+    """量能审计是逐候选闸门：部分缺失降级候选，不再拖垮全局数据质量。"""
     status = _source_status()
     status["volume_audit"] = {"status": "degraded", "reason": "部分量能缺失"}
     quality, reasons = Pipeline()._compute_data_quality(
         status, _sentiment(), True, _candidates(volume=None, amount=None)
     )
-    assert quality == "degraded"
-    assert any("量能" in r for r in reasons)
+    assert quality == "ok"
+    assert reasons == []
 
 
 def test_all_fields_ok():

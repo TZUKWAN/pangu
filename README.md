@@ -231,7 +231,36 @@ python -m pytest engine/tests/ -q --ignore=engine/tests/test_pipeline_live.py
 python -m pytest engine/tests/test_pipeline_live.py -q
 ```
 
-当前状态：**277 个纯逻辑单元测试全过**。
+当前状态：**467 个纯逻辑单元测试全过**。
+
+---
+
+## 历史回放回测（PIT-safe 成功率验证）
+
+系统内置基于本地全市场日线档案（`data/market_breadth/raw.sqlite3`）的历史回放能力，
+可在任意历史交易日完整复现盘后选股链路，并对每笔正式推荐做因果 1-3 日回放
+（次日入场 → 结构化退出，含佣金/印花税/滑点），度量**真实净费用后成功率**。
+
+```bash
+# 历史回放单日选股（与实盘同一套 pipeline，本地档案数据面）
+python -m engine.cli scan --date 20260618 --replay
+
+# 回放回测：区间内每个交易日选股 → 逐笔推荐回放 → 成功率报告
+python -m engine.cli replay-backtest --start 20260410 --end 20260720
+
+# 参数网格搜索（优化期网格 → 留出期验证，防过拟合）
+python tools/run_optimize.py --start 20260601 --end 20260630 --workers 4
+
+# RPS 预计算：默认走本地档案直算（秒级）；--live 强制走网络逐股路径
+python -m engine.cli rps-build
+```
+
+成功率的诚实口径：
+- **win = 净费用后 net_pnl > 0**；未触发条件买点记 `no_entry`（单列成交率，不计胜负）
+- 样本不足（成交 < 30 笔）时报告标注 `insufficient_sample`，不外推统计结论
+- 优化期与验证期严格分离；报告同时给出 Wilson 95% 置信下界、盈亏比、最大回撤
+- **任何声称 ≥99% 的预测成功率都不真实**（只能通过前视偏差/过拟合制造）。
+  本系统的全部成功率数字以回测报告为准，并标注样本量与区间。
 
 ---
 
@@ -241,7 +270,8 @@ python -m pytest engine/tests/test_pipeline_live.py -q
 - 题材龙头池的板块持续性、新闻催化强度尚未完全量化。
 - 事件驱动池目前主要基于龙虎榜，业绩预增/回购等事件需后续接入公告解析。
 - 未校准的推荐度/概率字段已标记 `calibrated: false`，不代表真实胜率。
-- `python -m engine.cli doctor` 数据源健康检查命令待补充。
+- 回放模式无实时新闻面/资金流/估值数据（公告事件走本地档案），相应闸门按
+  「数据不可得」处理并在结果中标注，不伪装成检查通过。
 
 ---
 

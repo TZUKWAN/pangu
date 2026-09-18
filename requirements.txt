@@ -4,12 +4,14 @@
 akshare>=1.14.0          # 主数据源（A 股行情/板块/资金/涨停/财报，无 token）
 adata>=2.8.0             # 多源 fallback 数据源（akshare 限流/封 IP 时兜底，免 token）
 mootdx>=0.11.0           # 通达信 TCP 行情（不封 IP，K线/实时报价兜底）
+baostock>=0.9.3,<1       # 精确交易日证券全集与历史市场广度回填
 pandas>=2.0.0            # 数据处理
 numpy>=1.24.0            # 数值计算
 pyarrow>=14.0.0          # parquet 缓存读写
 pyyaml>=6.0              # 配置解析
 pytz>=2023.3             # 时区（akshare 返回北京时间）
 requests>=2.31.0         # akshare 底层依赖（显式声明）
+pypdf>=6.14.2,<7         # 巨潮官方公告 PDF 正文提取（事件强度分析）
 rich>=13.0.0            # CLI 美化（REPL 终端渲染）
 fastapi>=0.110.0         # Web 服务（HTML UI 后端）
 uvicorn>=0.29.0          # ASGI 服务器（配合 fastapi）

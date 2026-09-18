@@ -100,6 +100,7 @@ canvas{width:100%;max-width:100%}
 .trade-plan{margin-top:12px;background:#0d131d;border:1px solid var(--border);border-radius:8px;padding:12px}
 .rail{position:relative;height:58px;margin:14px 10px 6px;border-top:2px solid #344156}
 .rail-point{position:absolute;top:-8px;transform:translateX(-50%);text-align:center;font-size:10px;color:var(--muted);min-width:54px}.rail-point i{display:block;width:14px;height:14px;border-radius:50%;margin:0 auto 5px;border:2px solid #0d131d}.rail-point.stop i{background:var(--up)}.rail-point.buy i{background:var(--blue)}.rail-point.now i{background:var(--warn)}.rail-point.target i{background:var(--down)}
+.exit-rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:10px}.exit-rule{background:#101722;border:1px solid #1f2b3d;border-radius:7px;padding:8px}.exit-rule b{display:block;color:var(--text2);margin-bottom:3px}.exit-rule span{color:var(--muted);font-size:11px;line-height:1.5}
 .reason-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px}.fact-list{display:flex;flex-direction:column;gap:7px}.fact{display:flex;justify-content:space-between;gap:10px;background:#101722;border:1px solid #1f2b3d;border-radius:7px;padding:8px;color:var(--text2)}
 .rank-tabs{display:flex;gap:5px}.rank-tabs button{font-size:11px;padding:4px 8px}.rank-tabs button.active{color:#8fc5ff;border:1px solid #375372}
 .tbl{width:100%;border-collapse:collapse;font-size:11px}.tbl th{background:var(--panel2);color:var(--muted);font-weight:600;text-align:left;padding:7px}.tbl td{border-top:1px solid #1e293b;padding:7px}.tbl tr:hover{background:#182232}
@@ -237,11 +238,11 @@ canvas{width:100%;max-width:100%}
 
       <section class="bottom-grid">
         <section class="panel">
-          <div class="panel-hd">当前策略成功率 <div><button class="btn-ghost" id="recordLatestBtn">记录当前</button><button class="btn-ghost" id="refreshPerformanceBtn">刷新评估</button></div></div>
+          <div class="panel-hd">严格 1-3 日成功率验收 <div><button class="btn-ghost" id="recordLatestBtn">记录当前</button><button class="btn-ghost" id="refreshPerformanceBtn">刷新评估</button></div></div>
           <div class="panel-body">
             <div class="perf-grid" id="perfGrid"></div>
             <div class="muted" id="perfStatus" style="margin-top:8px"></div>
-            <div style="overflow:auto;margin-top:10px"><table class="tbl"><thead><tr><th>日期</th><th>代码</th><th>名称</th><th>状态</th><th style="text-align:right">1日收益</th><th>阻断</th></tr></thead><tbody id="perfBody"></tbody></table></div>
+            <div style="overflow:auto;margin-top:10px"><table class="tbl"><thead><tr><th>信号日</th><th>代码</th><th>名称</th><th>执行状态</th><th>入场/退出</th><th style="text-align:right">净收益</th><th>退出原因</th></tr></thead><tbody id="perfBody"></tbody></table></div>
           </div>
         </section>
         <section class="panel" id="settingsPanel">
@@ -670,10 +671,10 @@ function riskHtml(c,debate,sf){
   return rows.map(([k,v])=>`<div class="fact"><span>${esc(k)}</span><b>${esc(v)}</b></div>`).join('');
 }
 function tradePlanHtml(c){
-  const ee=c.entry_exit||{}, now=Number(c.close||0), stop=Number(ee.stop_loss?.price||0);
+  const ee=c.entry_exit||{}, plan=ee.exit_plan||c.exit_plan||{}, now=Number(c.close||0), stop=Number(plan.initial_stop||ee.stop_loss?.price||0);
   const buys=(ee.buy_points||[]).filter(x=>x&&x.price).sort((a,b)=>(b.is_primary?1:0)-(a.is_primary?1:0));
-  const buy=Number((buys[0]||{}).price||now), target=Number((ee.take_profit||[])[0]?.price||0);
-  const vals=[now,stop,buy,target].filter(Boolean), min=Math.min(...vals), max=Math.max(...vals), span=Math.max(max-min,.01);
+  const buy=Number((buys[0]||{}).price||now), target=Number(plan.first_target||(ee.take_profit||[])[0]?.price||0), finalTarget=Number(plan.final_target||(ee.take_profit||[]).slice(-1)[0]?.price||0);
+  const vals=[now,stop,buy,target,finalTarget].filter(Boolean), min=Math.min(...vals), max=Math.max(...vals), span=Math.max(max-min,.01);
   const pos=v=>clamp((Number(v)-min)/span*100,2,98);
   const planWarnings=[];
   if(buy&&now&&buy<now*.98)planWarnings.push('主买点低于现价，当前更像等待回踩，不是直接追价信号');
@@ -683,12 +684,16 @@ function tradePlanHtml(c){
     ['stop','止损',stop,ee.stop_loss?.method],
     ['buy','买点',buy,(buys[0]||{}).condition],
     ['now','现价',now,'当前价格'],
-    ['target','目标',target,(ee.take_profit||[])[0]?.method]
+    ['target','减半',target,(ee.take_profit||[])[0]?.method],
+    ['target','清仓',finalTarget,(ee.take_profit||[]).slice(-1)[0]?.method]
   ].filter(x=>x[2]);
+  const ruleLabels={hard_stop:'硬止损',first_target:'第一卖点',final_target:'第二卖点',trailing_stop:'移动止盈',time_stop:'时间卖点',news_invalidation:'新闻证伪',market_retreat:'情绪退潮',theme_invalidation:'题材失效',trend_break:'趋势破位'};
+  const rules=(plan.rules||[]).slice().sort((a,b)=>Number(a.priority||99)-Number(b.priority||99));
   return `<div class="trade-plan"><div class="panel-hd" style="padding:0;border:0;margin-bottom:6px">交易计划 <small>把价格关系先看清楚，再谈操作</small></div>
     <div class="rail">${points.map(p=>`<div class="rail-point ${p[0]}" style="left:${pos(p[2])}%"><i></i><b>${esc(p[1])}</b><br><span class="mono">${num(p[2],2)}</span></div>`).join('')}</div>
     ${planWarnings.length?`<div style="display:flex;flex-direction:column;gap:5px;margin:8px 0">${planWarnings.map(w=>`<span class="tag tag-warn">${esc(w)}</span>`).join('')}</div>`:''}
-    <div class="muted" style="font-size:12px">${esc((buys[0]||{}).condition||'暂无买点条件')}；${esc(ee.stop_loss?.method||'暂无止损方法')}；盈亏比 ${num(ee.risk_reward_ratio||0,1)}</div>
+    <div class="muted" style="font-size:12px">${esc((buys[0]||{}).condition||'暂无买点条件')}；${esc(ee.stop_loss?.method||'暂无止损方法')}；盈亏比 ${num(ee.risk_reward_ratio||0,1)}；最多持有 ${esc(plan.max_holding_days??'-')} 个交易日；同日双触发按止损优先</div>
+    ${rules.length?`<div class="exit-rules">${rules.map(rule=>`<div class="exit-rule"><b>${esc(ruleLabels[rule.rule_type]||rule.rule_type||'卖出条件')}</b><span>${esc(rule.condition||'')}</span></div>`).join('')}</div>`:'<div class="tag tag-warn" style="margin-top:10px">卖出计划缺失，仅可观察，不应执行</div>'}
   </div>`;
 }
 function renderRadar(bd){
@@ -721,26 +726,31 @@ function renderRank(d){
 
 async function loadPerformance(refresh=false){
   try{
-    const r=await fetch(API+`/api/recommendations/performance?days=60&refresh=${refresh?'true':'false'}&only_recommended=true`);
+    const r=await fetch(API+`/api/recommendations/short-term-performance?days=3650&refresh=${refresh?'true':'false'}`);
     const d=await r.json();
     renderPerformance(d.performance||{});
-    if($('perfStatus'))$('perfStatus').textContent=d.evaluation?`已评估 ${d.evaluation.evaluated_metrics||0} 条真实推荐周期表现，跳过 ${d.evaluation.skipped||0} 条`:'默认只统计玄武推荐，观察池不计入成功率';
+    const a=(d.performance||{}).acceptance||{};
+    const statusText={verified:'已通过85%严格验收',insufficient_sample:'样本不足，禁止声称85%',incomplete_causal_context:'因果新闻/情绪/题材上下文不足',target_not_met:'真实表现尚未达到目标'}[a.verification_status]||'尚未形成严格复盘结果';
+    if($('perfStatus'))$('perfStatus').textContent=`${statusText}${(a.blockers||[]).length?'：'+a.blockers.slice(0,3).join('；'):''}`;
   }catch(e){
     if($('perfGrid'))$('perfGrid').innerHTML='<div class="muted">复盘数据暂不可用</div>';
   }
 }
 function renderPerformance(p){
-  const hs=p.horizons||{};
-  $('perfGrid').innerHTML=[1,3,5,10].map(h=>{
-    const x=hs[h]||{}, ret=x.avg_return!=null?Number(x.avg_return)*100:null, wr=x.win_rate!=null?Number(x.win_rate)*100:null;
-    return `<div class="perf-card"><b class="${cls(ret)}">${ret==null?'--':pct(ret,2)}</b><span>${h}日均收益 · 胜率 ${wr==null?'--':num(wr,0)+'%'} · 样本 ${x.evaluated||0}</span></div>`;
-  }).join('');
+  const a=p.acceptance||{}, wr=a.observed_win_rate!=null?Number(a.observed_win_rate)*100:null, lower=a.wilson_95_lower!=null?Number(a.wilson_95_lower)*100:null, avg=a.average_net_return!=null?Number(a.average_net_return)*100:null, coverage=a.execution_rate!=null?Number(a.execution_rate)*100:null;
+  $('perfGrid').innerHTML=[
+    ['实测成功率',wr,`${a.executed_count||0} 笔成交 / ${a.independent_trade_dates||0} 个交易日`],
+    ['95%置信下界',lower,'必须达到 85% 才可验证通过'],
+    ['平均净收益',avg,`已计佣金、印花税和滑点`],
+    ['买点成交覆盖率',coverage,`${a.signal_count||0} 条正式信号，未成交 ${a.no_entry_count||0}`]
+  ].map(([label,value,note])=>`<div class="perf-card"><b class="${cls(value)}">${value==null?'--':pct(value,2)}</b><span>${label} · ${note}</span></div>`).join('');
   const rows=p.latest||[];
   $('perfBody').innerHTML=rows.length?rows.slice(0,40).map(r=>`<tr>
-    <td class="mono muted">${esc(r.run_date||'')}</td><td class="mono">${esc(r.code||'')}</td><td>${esc(r.name||'')}</td>
-    <td>${esc(statusLabel(r.xuanwu_status||'watch'))}</td><td class="mono ${cls(r.return_1d)}" style="text-align:right">${r.return_1d==null?'--':pct(r.return_1d,2)}</td>
-    <td>${(r.blockers||[]).slice(0,2).map(blockerLabel).map(esc).join('、')||'-'}</td>
-  </tr>`).join(''):'<tr><td colspan="6" class="muted" style="text-align:center;padding:18px">暂无推荐记录</td></tr>';
+    <td class="mono muted">${esc(r.signal_date||'')}</td><td class="mono">${esc(r.code||'')}</td><td>${esc(r.name||'')}</td>
+    <td>${esc(({closed:'已退出',no_entry:'未触发买点',pending:'待完成',invalid:'无效证据'}[r.status]||r.status||'-'))}</td>
+    <td class="mono">${esc(r.entry_date||'-')} / ${esc(r.exit_date||'-')}</td><td class="mono ${cls(Number(r.net_return||0)*100)}" style="text-align:right">${r.net_return==null?'--':pct(Number(r.net_return)*100,2)}</td>
+    <td>${esc(r.reason||'-')}</td>
+  </tr>`).join(''):'<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">暂无完成严格撮合的正式推荐</td></tr>';
 }
 async function recordLatestRecommendations(){
   if($('perfStatus'))$('perfStatus').textContent='正在记录当前报告...';
@@ -748,7 +758,7 @@ async function recordLatestRecommendations(){
     const r=await fetch(API+'/api/recommendations/record-latest',{method:'POST'});
     const d=await r.json();
     if(!d.ok)throw new Error(d.detail||'记录失败');
-    if($('perfStatus'))$('perfStatus').textContent=`已记录 ${d.recorded?.recorded||0} 只候选，其中玄武 ${d.recorded?.recommended||0} 只`;
+    if($('perfStatus'))$('perfStatus').textContent=`已记录 ${d.recorded?.recorded||0} 条决策，其中正式推荐 ${d.recorded?.recommended||0} 条`;
     await loadPerformance(false);
   }catch(e){
     if($('perfStatus'))$('perfStatus').textContent='记录失败: '+e.message;
