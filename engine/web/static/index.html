@@ -116,6 +116,33 @@ canvas{width:100%;max-width:100%}
 @media(max-width:1500px){.analysis-grid{grid-template-columns:1fr 1fr}.analysis-grid .detail-panel{grid-column:1/-1}.workbench{grid-template-columns:1fr}.detail-grid{grid-template-columns:1fr 1fr}.module-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:1180px){.app{grid-template-columns:1fr}.decision-grid{grid-template-columns:repeat(2,1fr)}.content-grid,.workbench,.analysis-grid,.bottom-grid{grid-template-columns:1fr}.analysis-grid>.panel,.bottom-grid>.panel,.module-grid>.panel{height:auto;max-height:none}.analysis-grid>.panel>.panel-body,.bottom-grid>.panel>.panel-body,.module-grid>.panel>.panel-body,.analysis-grid>.panel>div:not(.panel-hd):not(.panel-body){overflow:visible}.module-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.app{height:auto}.main{min-height:100vh}.candidate-list{max-height:none}}
 @media(max-width:720px){.topbar{height:auto;align-items:flex-start;gap:10px;padding:12px;flex-direction:column}.top-actions{flex-wrap:wrap;width:100%}.top-status{max-width:100%;flex:1 1 100%;white-space:normal}.decision-grid,.module-grid{grid-template-columns:1fr}.overview-grid,.detail-grid,.reason-grid,.perf-grid,.settings-grid,.sentiment-visual,.follow-board-grid{grid-template-columns:1fr}.source-row{grid-template-columns:repeat(2,minmax(0,1fr))}.heatmap{grid-template-columns:1fr}.xw-strip{grid-template-columns:1fr}.xw-gates{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.main-nav{display:flex;gap:6px;align-items:center;padding:8px 16px 0;background:#0d131d;border-bottom:1px solid var(--border);flex-shrink:0}
+.nav-btn{background:transparent;border:1px solid transparent;border-bottom:0;border-radius:8px 8px 0 0;color:var(--muted);padding:8px 16px;font-size:13px;font-weight:600}
+.nav-btn:hover{color:var(--text);filter:none;background:var(--panel2)}
+.nav-btn.active{background:var(--panel);border-color:var(--border);color:#8fc5ff}
+.nav-badge{display:inline-block;min-width:16px;padding:0 5px;margin-left:5px;border-radius:999px;background:var(--up);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center}
+.exec-grid{display:grid;grid-template-columns:1.1fr 1.1fr .9fr;gap:10px;margin-bottom:10px}
+.exec-banner{display:flex;align-items:center;gap:8px;border-radius:8px;padding:9px 11px;margin-top:9px;font-size:12px;border:1px solid var(--border);background:var(--panel2)}
+.exec-banner.ok{border-color:rgba(57,185,129,.4);background:rgba(57,185,129,.08);color:#86e7b8}
+.exec-banner.blocked{border-color:rgba(240,91,91,.45);background:rgba(240,91,91,.09);color:#ff9a9a}
+.mode-badge{display:inline-flex;align-items:center;gap:6px;padding:4px 12px;border-radius:999px;font-weight:800;font-size:14px;letter-spacing:1px;border:1px solid var(--border);background:var(--panel2);color:var(--text2)}
+.mode-badge.mode-PAPER{border-color:rgba(90,169,255,.5);background:rgba(90,169,255,.12);color:#9ccaff}
+.mode-badge.mode-SHADOW{border-color:rgba(139,124,246,.5);background:rgba(139,124,246,.12);color:#c3b8ff}
+.mode-badge.mode-LIVE{border-color:rgba(240,91,91,.6);background:rgba(240,91,91,.14);color:#ff8f8f}
+.mode-badge.mode-MANUAL_CONFIRM{border-color:rgba(224,170,62,.5);background:rgba(224,170,62,.12);color:#f2c66c}
+.pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:999px;font-size:11px;background:#202b3c;color:var(--text2);white-space:nowrap}
+.pill-ok{background:rgba(57,185,129,.14);color:#79dfb1}.pill-warn{background:rgba(224,170,62,.14);color:#f2c66c}.pill-bad{background:rgba(240,91,91,.16);color:#ff8f8f}.pill-info{background:rgba(90,169,255,.14);color:#9ccaff}.pill-muted{background:#1b2534;color:var(--muted)}
+.pill-unknown{background:var(--up);color:#fff;font-weight:800;box-shadow:0 0 0 3px rgba(240,91,91,.18)}
+.order-form{display:grid;grid-template-columns:1fr 66px 74px 84px;gap:7px}
+.order-form input,.order-form select{width:100%}
+.confirm-box{margin-top:9px;border:1px solid rgba(240,91,91,.5);background:rgba(240,91,91,.07);border-radius:8px;padding:9px}
+.confirm-box input{width:100%;margin:6px 0}
+.stage-strip{display:flex;flex-wrap:wrap;gap:7px;align-items:center}
+.stage-item{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--border);border-radius:999px;padding:4px 10px;font-size:11px;color:var(--muted);background:var(--panel2)}
+.stage-item.hit{border-color:rgba(57,185,129,.45);background:rgba(57,185,129,.1);color:#86e7b8}
+.stage-item .mono{font-size:10px}
+.kv-list{display:flex;flex-direction:column;gap:6px}
+.kv-list .fact{background:var(--panel2);border:1px solid #202a3b}
 </style>
 </head>
 <body>
@@ -130,7 +157,13 @@ canvas{width:100%;max-width:100%}
         <button class="btn-primary" onclick="runScan()">刷新扫描</button>
       </div>
     </header>
-    <div class="scroll" id="mainScroll">
+    <nav class="main-nav" id="mainNav">
+      <button class="nav-btn active" data-view="today" data-testid="nav-today" onclick="switchView('today')">今日</button>
+      <button class="nav-btn" data-view="execution" data-testid="nav-execution" onclick="switchView('execution')">执行</button>
+      <button class="nav-btn" data-view="strategies" data-testid="nav-strategies" onclick="switchView('strategies')">策略</button>
+      <button class="nav-btn" data-view="research" data-testid="nav-research" onclick="switchView('research')">研究</button>
+    </nav>
+    <div class="scroll" id="mainScroll" data-view="today">
       <section class="decision-grid">
         <div class="decision-card">
           <h2>明日行动信号</h2>
@@ -156,6 +189,11 @@ canvas{width:100%;max-width:100%}
           <div id="sourceTags" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:3px"></div>
           <p class="muted" id="sourceNote" style="margin-top:9px">降级源会影响决策置信度</p>
         </div>
+      </section>
+
+      <section class="panel" id="pipelineStripPanel" style="margin-bottom:10px">
+        <div class="panel-hd">信号 → 执行链路 <small id="pipelineStripNote">今日正式推荐走到了哪一步（信号/计划/下单/确认/成交）</small></div>
+        <div class="panel-body"><div class="stage-strip" id="pipelineStrip"><span class="muted">加载中</span></div></div>
       </section>
 
       <section class="module-grid">
@@ -261,6 +299,106 @@ canvas{width:100%;max-width:100%}
         </section>
       </section>
     </div>
+
+    <div class="scroll" id="view-execution" data-view="execution" style="display:none">
+      <div class="exec-grid">
+        <section class="panel">
+          <div class="panel-hd">执行状态 <button class="btn-ghost" data-testid="overview-refresh-btn" onclick="loadExecutionOverview(true)">刷新</button></div>
+          <div class="panel-body">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span class="mode-badge" id="execModeBadge" data-testid="mode-badge">--</span>
+              <span class="pill" id="execCompliancePill">合规 --</span>
+              <span class="pill" id="execAdapterPill">通道 --</span>
+            </div>
+            <div class="exec-banner" id="tradingBanner" data-testid="trading-banner">加载中</div>
+            <div class="kv-list" style="margin-top:9px">
+              <div class="fact"><span>最近对账</span><b class="mono" id="execLastReconcile">--</b></div>
+              <div class="fact"><span>人工介入标记</span><b id="execManualFlag">--</b></div>
+              <div class="fact"><span>累计订单</span><b class="mono" id="execOrderCount">--</b></div>
+            </div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-hd">熔断与对账</div>
+          <div class="panel-body">
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button class="btn-ghost" id="reconcileBtn" data-testid="reconcile-btn" onclick="runReconcile()">立即对账</button>
+            </div>
+            <button class="btn-ghost" id="killSwitchBtn" data-testid="kill-switch-btn" onclick="armKillSwitch()" style="margin-top:10px;width:100%;border-color:rgba(240,91,91,.5);color:#ff8f8f">🔥 一键熔断（Kill Switch）</button>
+            <div class="confirm-box" id="killConfirmBox" style="display:none">
+              <b style="color:#ff8f8f">二次确认：熔断将撤销全部未完成委托并停止交易</b>
+              <input id="killReasonInput" data-testid="kill-switch-reason" placeholder="必填：熔断原因（审计留痕）">
+              <div style="display:flex;gap:8px">
+                <button class="btn-primary" id="killConfirmBtn" data-testid="kill-switch-confirm" onclick="confirmKillSwitch('engage')">确认熔断</button>
+                <button class="btn-ghost" onclick="cancelKillSwitchFlow()">取消</button>
+              </div>
+            </div>
+            <div id="killResumeBox" style="display:none">
+              <div class="confirm-box" style="border-color:rgba(224,170,62,.5);background:rgba(224,170,62,.06)">
+                <b style="color:#f2c66c">熔断已触发，恢复需填写原因</b>
+                <input id="killResumeReasonInput" data-testid="kill-switch-resume-reason" placeholder="必填：恢复交易原因（审计留痕）">
+                <div style="display:flex;gap:8px">
+                  <button class="btn-primary" data-testid="kill-switch-resume" onclick="confirmKillSwitch('disengage')">确认恢复</button>
+                </div>
+              </div>
+            </div>
+            <div class="muted" id="execActionStatus" style="margin-top:9px;min-height:18px"></div>
+          </div>
+        </section>
+        <section class="panel">
+          <div class="panel-hd">手动下单（PAPER 纸面撮合）</div>
+          <div class="panel-body">
+            <div class="muted" style="margin-bottom:8px">限价单；仅 PAPER 模式经 PaperBroker 撮合，其余模式只登记计划。</div>
+            <label class="muted" style="font-size:11px">策略（仅列可执行状态）</label>
+            <select id="orderStrategySelect" data-testid="order-strategy" style="width:100%;margin:4px 0 8px"><option value="">加载策略中…</option></select>
+            <div class="order-form">
+              <input id="orderSymbol" data-testid="order-symbol" placeholder="代码 如 600000">
+              <select id="orderSide" data-testid="order-side"><option value="BUY">买入</option><option value="SELL">卖出</option></select>
+              <input id="orderQty" data-testid="order-qty" type="number" min="100" step="100" placeholder="数量" value="100">
+              <input id="orderPrice" data-testid="order-price" type="number" min="0.01" step="0.01" placeholder="限价">
+            </div>
+            <button class="btn-primary" id="placeOrderBtn" data-testid="place-order-submit" onclick="placeOrder()" style="margin-top:9px;width:100%">提交纸面限价单</button>
+            <div class="muted" id="orderStatus" style="margin-top:8px;min-height:18px"></div>
+          </div>
+        </section>
+      </div>
+      <section class="panel">
+        <div class="panel-hd">订单流水 <button class="btn-ghost" onclick="loadOrders()">刷新</button></div>
+        <div style="overflow:auto;max-height:560px"><table class="tbl" data-testid="orders-table" id="ordersTable">
+          <thead><tr><th>时间</th><th>client_order_id</th><th>策略</th><th>代码</th><th>方向</th><th style="text-align:right">数量</th><th style="text-align:right">限价</th><th style="text-align:right">成交</th><th>状态</th><th>说明</th></tr></thead>
+          <tbody id="ordersBody"><tr><td colspan="10" class="muted" style="text-align:center;padding:18px">加载中</td></tr></tbody>
+        </table></div>
+      </section>
+    </div>
+
+    <div class="scroll" id="view-strategies" data-view="strategies" style="display:none">
+      <section class="panel">
+        <div class="panel-hd">策略注册表 <small>生命周期：idea → research → validated → paper → shadow_live → limited_live → live</small><button class="btn-ghost" onclick="loadStrategies()">刷新</button></div>
+        <div style="overflow:auto"><table class="tbl" data-testid="strategies-table" id="strategiesTable">
+          <thead><tr><th>策略</th><th>状态</th><th>版本</th><th>训练/验证/测试</th><th>OOS 指标</th><th>证据</th><th>定位</th></tr></thead>
+          <tbody id="strategiesBody"><tr><td colspan="7" class="muted" style="text-align:center;padding:18px">加载中</td></tr></tbody>
+        </table></div>
+        <div class="panel-body muted" id="strategiesNote">除状态为 live / limited_live 的策略外，任何条目都不提供实盘建议；研究状态条目仅为研究记录。</div>
+      </section>
+    </div>
+
+    <div class="scroll" id="view-research" data-view="research" style="display:none">
+      <section class="panel" style="margin-bottom:10px">
+        <div class="panel-hd">实验登记簿 <span class="pill pill-bad" id="failedExpBadge" data-testid="failed-count" style="display:none"></span><button class="btn-ghost" onclick="loadResearch()">刷新</button></div>
+        <div style="overflow:auto"><table class="tbl" data-testid="experiments-table" id="experimentsTable">
+          <thead><tr><th>实验ID</th><th>假设</th><th>状态</th><th>结论</th><th style="text-align:right">OOS PF</th><th style="text-align:right">OOS Sharpe</th><th style="text-align:right">OOS MDD</th></tr></thead>
+          <tbody id="experimentsBody"><tr><td colspan="7" class="muted" style="text-align:center;padding:18px">加载中</td></tr></tbody>
+        </table></div>
+        <div class="panel-body muted" id="researchExperimentsNote">失败实验永远可见，不允许被隐藏（P: 失败实验不能隐藏）。</div>
+      </section>
+      <section class="panel">
+        <div class="panel-hd">因子库 <small id="factorCountNote"></small></div>
+        <div style="overflow:auto"><table class="tbl" data-testid="research-table" id="researchTable">
+          <thead><tr><th>因子</th><th>家族</th><th>版本</th><th style="text-align:right">IC(排名均值)</th><th style="text-align:right">ICIR</th><th style="text-align:right">样本天数</th><th>状态</th></tr></thead>
+          <tbody id="researchBody"><tr><td colspan="7" class="muted" style="text-align:center;padding:18px">加载中</td></tr></tbody>
+        </table></div>
+      </section>
+    </div>
   </main>
 
 </div>
@@ -309,6 +447,7 @@ async function loadLatest(){
     CURRENT=await r.json();
     $('timeLabel').textContent=CURRENT.date||CURRENT.runtime?.now_text||'--';
     renderAll();
+    loadPipelineStrip();
     maybeAutoScanLatest();
   }catch(e){
     $('mainScroll').innerHTML='<div class="empty"><h2>无法连接后端</h2><p>请运行 python -m engine.web 后刷新页面。</p></div>';
@@ -578,7 +717,7 @@ function candidateHtml(c){
     <div class="bar-row"><span>推荐</span><div class="bar"><i style="width:${clamp(score)}%"></i></div><b>${num(score,0)}</b></div>
     <div class="bar-row"><span>闸门</span><div class="bar"><i style="width:${clamp(xw.score||0)}%"></i></div><b>${xw.score!=null?num(xw.score,0):'--'}</b></div>
     ${blockers.length?`<div class="blocker-row">${blockers.map(b=>`<span class="blocker-chip">${esc(b)}</span>`).join('')}</div>`:''}
-    <div class="bar-row"><span>概率</span><div class="bar"><i style="width:${clamp(rec.up_prob||0)}%"></i></div><b>${num(rec.up_prob||0,0)}%</b></div>
+    <div class="bar-row"><span title="未校准分数，非概率">原始分</span><div class="bar"><i style="width:${clamp(rec.up_prob||0)}%"></i></div><b>${num(rec.up_prob||0,0)}</b></div>
     <div class="cand-meta">
       <div><b class="mono">${num(c.close,2)}</b><span>价格</span></div>
       <div><b class="${cls(c.pct_change)}">${pct(c.pct_change,1)}</b><span>涨跌</span></div>
@@ -931,6 +1070,289 @@ function maybeAutoScanLatest(){
   sessionStorage.setItem(key,'1');
   AUTO_SCAN_STARTED=true;
   runScan({auto:true});
+}
+
+// ---------------------------------------------------------------------- //
+// Phase 11：视图切换 + 执行 / 策略 / 研究 视图
+// ---------------------------------------------------------------------- //
+const VIEW_IDS={today:'mainScroll',execution:'view-execution',strategies:'view-strategies',research:'view-research'};
+const VIEW_LOADED={};
+function switchView(name){
+  if(!VIEW_IDS[name])return;
+  document.querySelectorAll('#mainNav .nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
+  Object.entries(VIEW_IDS).forEach(([key,id])=>{const el=$(id);if(el)el.style.display=(key===name)?'':'none';});
+  if(name!=='today'&&!VIEW_LOADED[name]){VIEW_LOADED[name]=true;
+    if(name==='execution'){loadExecutionOverview(true);loadOrders();loadOrderStrategies();}
+    if(name==='strategies')loadStrategies();
+    if(name==='research')loadResearch();
+  }
+}
+function setExecStatus(t){if($('execActionStatus'))$('execActionStatus').textContent=t||''}
+function setOrderStatus(t){if($('orderStatus'))$('orderStatus').textContent=t||''}
+
+function modeBadgeClass(mode){return {PAPER:'mode-PAPER',SHADOW:'mode-SHADOW',LIVE:'mode-LIVE',MANUAL_CONFIRM:'mode-MANUAL_CONFIRM'}[mode]||''}
+function orderPill(status){
+  const map={FILLED:['pill-ok','已成交'],PARTIALLY_FILLED:['pill-warn','部分成交'],ACKNOWLEDGED:['pill-info','已确认'],
+    SUBMITTED:['pill-warn','已报'],PENDING_SUBMIT:['pill-warn','待报'],CREATED:['pill-muted','已登记'],
+    CANCEL_PENDING:['pill-warn','待撤'],CANCELLED:['pill-muted','已撤'],REJECTED:['pill-bad','拒绝'],RISK_REJECTED:['pill-bad','风控拒绝']};
+  if(status==='UNKNOWN')return ['pill-unknown','UNKNOWN 需对账'];
+  const [cls,label]=map[status]||['pill-muted',status||'未知'];
+  return [cls,label];
+}
+function complianceOk(state){return state==='CONFIRMED'||state==='NOT_REQUIRED_CONFIRMED'}
+
+async function loadExecutionOverview(showStatus){
+  try{
+    const r=await fetch(API+'/api/execution/overview');
+    const d=await r.json();
+    renderExecutionOverview(d);
+    if(showStatus)setExecStatus('总览已刷新');
+  }catch(e){
+    if($('tradingBanner'))$('tradingBanner').className='exec-banner blocked';
+    if($('tradingBanner'))$('tradingBanner').textContent='执行总览加载失败: '+e.message;
+  }
+}
+function renderExecutionOverview(d){
+  const badge=$('execModeBadge');
+  if(badge){badge.className='mode-badge '+modeBadgeClass(d.execution_mode);badge.textContent=d.execution_mode||'--';badge.title=d.execution_mode==='LIVE'?'实盘模式（LiveGate 门禁放行后才可进入）':'当前执行模式';}
+  const comp=$('execCompliancePill');
+  if(comp){const ok=complianceOk(d.compliance_state);comp.className='pill '+(ok?'pill-ok':(d.compliance_state==='UNKNOWN'?'pill-muted':'pill-warn'));comp.textContent=`合规 ${d.compliance_state||'UNKNOWN'}`;comp.title='CONFIRMED / NOT_REQUIRED_CONFIRMED 才允许 LIVE';}
+  const ah=d.adapter_health||{};
+  if($('execAdapterPill')){const ok=ah.ok!==false;$('execAdapterPill').className='pill '+(ok?'pill-ok':'pill-bad');$('execAdapterPill').textContent=`通道 ${ah.adapter||d.adapter_health?.adapter||'paper'} ${ok?'正常':'异常'}`;$('execAdapterPill').title=ah.reason||'';}
+  const banner=$('tradingBanner');
+  if(banner){
+    if(d.kill_switch){banner.className='exec-banner blocked';banner.textContent=`🚫 熔断已触发：${d.kill_switch_reason||'未记录原因'}；一切下单被禁止`;}
+    else if(d.manual_intervention_required){banner.className='exec-banner blocked';banner.textContent=`⚠️ 需人工介入：${d.manual_intervention_reason||''}；对账解决前禁止下单`;}
+    else if(!d.trading_allowed){banner.className='exec-banner blocked';banner.textContent='⛔ 交易被阻断（trading_blocked）；请先对账';}
+    else {banner.className='exec-banner ok';banner.textContent=d.execution_mode==='LIVE'?'✅ 实盘模式运行中，交易闸门开放':'✅ 交易闸门开放（PAPER/非实盘）';}
+  }
+  const lr=d.last_reconcile;
+  if($('execLastReconcile'))$('execLastReconcile').textContent=lr?`${lr.ts||''} · 匹配 ${lr.matched??0}${lr.reconcile_ok?'':' ⚠️异常'}`:'从未对账';
+  if($('execManualFlag'))$('execManualFlag').textContent=d.manual_intervention_required?(d.manual_intervention_reason||'需人工介入'):'无';
+  if($('execOrderCount'))$('execOrderCount').textContent=d.order_count??'--';
+  const resumeBox=$('killResumeBox');
+  if(resumeBox)resumeBox.style.display=d.kill_switch?'':'none';
+}
+let KILL_ARMED=false;
+function armKillSwitch(){
+  if(KILL_ARMED)return;
+  KILL_ARMED=true;
+  if($('killConfirmBox'))$('killConfirmBox').style.display='';
+  if($('killReasonInput'))$('killReasonInput').focus();
+}
+function cancelKillSwitchFlow(){
+  KILL_ARMED=false;
+  if($('killConfirmBox'))$('killConfirmBox').style.display='none';
+  if($('killReasonInput'))$('killReasonInput').value='';
+}
+async function confirmKillSwitch(action){
+  const input=action==='engage'?$('killReasonInput'):$('killResumeReasonInput');
+  const reason=(input?.value||'').trim();
+  if(!reason){setExecStatus('必须填写原因（审计要求）');return}
+  try{
+    const r=await fetch(API+'/api/execution/kill-switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action,reason,operator:'web'})});
+    const d=await r.json();
+    if(!r.ok)throw new Error(d.detail||'操作失败');
+    setExecStatus(`熔断${action==='engage'?'已触发':'已解除'}：${reason}`);
+  }catch(e){setExecStatus('熔断操作失败: '+e.message)}
+  KILL_ARMED=false;
+  if($('killConfirmBox'))$('killConfirmBox').style.display='none';
+  if($('killReasonInput'))$('killReasonInput').value='';
+  if($('killResumeReasonInput'))$('killResumeReasonInput').value='';
+  await loadExecutionOverview(false);
+  await loadOrders();
+}
+async function runReconcile(){
+  setExecStatus('对账中…');
+  try{
+    const r=await fetch(API+'/api/execution/reconcile',{method:'POST'});
+    const d=await r.json();
+    const rep=d.report||{};
+    setExecStatus(`对账完成：匹配 ${rep.matched??0}，异常 ${(rep.mismatches||[]).length}，仍未知 ${(rep.still_unknown||[]).length}${d.ok?'':'（存在异常，请人工核查）'}`);
+  }catch(e){setExecStatus('对账失败: '+e.message)}
+  await loadExecutionOverview(false);
+  await loadOrders();
+}
+async function loadOrderStrategies(){
+  const sel=$('orderStrategySelect');
+  if(!sel)return;
+  try{
+    const r=await fetch(API+'/api/strategies');
+    const d=await r.json();
+    const exec=(d.strategies||[]).filter(s=>s.executable);
+    sel.innerHTML=exec.length?exec.map(s=>`<option value="${htmlAttr(s.strategy_id)}">${esc(s.strategy_id)}（${esc(s.status)}）</option>`).join(''):'<option value="">无可执行策略（注册表内均为研究状态，禁止下单）</option>';
+  }catch(e){sel.innerHTML='<option value="">策略列表加载失败</option>'}
+}
+async function placeOrder(){
+  const strategyId=$('orderStrategySelect')?.value||'';
+  const payload={
+    strategy_id:strategyId,
+    symbol:($('orderSymbol')?.value||'').trim(),
+    side:$('orderSide')?.value||'BUY',
+    qty:Number($('orderQty')?.value||0),
+    limit_price:Number($('orderPrice')?.value||0),
+  };
+  if(!payload.strategy_id){setOrderStatus('无可执行策略，禁止下单');return}
+  if(!payload.symbol||!payload.qty||!payload.limit_price){setOrderStatus('请填写代码、数量（整百）和限价');return}
+  setOrderStatus('提交中…');
+  try{
+    const r=await fetch(API+'/api/execution/orders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await r.json();
+    if(!r.ok){
+      const detail=d.detail||{};
+      const msg=typeof detail==='string'?detail:(detail.message||'下单失败');
+      const extra=Array.isArray(detail.failed_checks)?`（${detail.failed_checks.join('；')}）`:'';
+      const blocked=Array.isArray(detail.blocked_by)?`（阻断: ${detail.blocked_by.join(',')}）`:'';
+      setOrderStatus(`❌ ${msg}${extra}${blocked}`);
+      return;
+    }
+    const o=d.order||{};
+    setOrderStatus(`${d.submitted?'✅ 已撮合':'📋 已登记'}：${o.client_order_id||''} 状态 ${orderPill(o.status)[1]}${o.reject_reason?`（${o.reject_reason}）`:''}`);
+    await loadOrders();
+    await loadExecutionOverview(false);
+  }catch(e){setOrderStatus('下单失败: '+e.message)}
+}
+async function loadOrders(){
+  const body=$('ordersBody');
+  if(!body)return;
+  try{
+    const r=await fetch(API+'/api/execution/orders?limit=100');
+    const d=await r.json();
+    const orders=d.orders||[];
+    if(!orders.length){body.innerHTML='<tr><td colspan="10" class="muted" style="text-align:center;padding:18px">暂无订单；PAPER 模式下单后这里会显示完整状态机时间线</td></tr>';return}
+    body.innerHTML=orders.map(o=>{
+      const [pillCls,pillText]=orderPill(o.status);
+      const last=(o.timeline||[]).slice(-1)[0]||{};
+      return `<tr>
+        <td class="mono muted">${esc((o.created_at||'').replace('T',' ').slice(0,19))}</td>
+        <td class="mono">${esc(o.client_order_id||'')}</td>
+        <td>${esc(o.strategy_id||'')}</td>
+        <td class="mono">${esc(o.symbol||'')}</td>
+        <td class="${o.side==='BUY'?'up':'down'}">${o.side==='BUY'?'买入':'卖出'}</td>
+        <td class="mono" style="text-align:right">${esc(o.qty??'')}</td>
+        <td class="mono" style="text-align:right">${o.limit_price!=null?num(o.limit_price,2):'--'}</td>
+        <td class="mono" style="text-align:right">${esc(o.filled_qty??0)}</td>
+        <td><span class="pill ${pillCls}" title="${htmlAttr(last.detail||'')}">${esc(pillText)}</span></td>
+        <td class="muted">${esc(o.reject_reason||last.detail||'')}</td>
+      </tr>`;
+    }).join('');
+  }catch(e){body.innerHTML=`<tr><td colspan="10" class="muted" style="text-align:center;padding:18px">订单加载失败: ${esc(e.message)}</td></tr>`}
+}
+
+async function loadStrategies(){
+  const body=$('strategiesBody');
+  if(!body)return;
+  try{
+    const r=await fetch(API+'/api/strategies');
+    const d=await r.json();
+    const rows=d.strategies||[];
+    if(!rows.length){body.innerHTML='<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">注册表为空</td></tr>';return}
+    const pillFor=s=>({idea:'pill-muted',research:'pill-warn',validated:'pill-info',paper:'pill-info',shadow_live:'pill-warn',limited_live:'pill-ok',live:'pill-ok',suspended:'pill-bad',retired:'pill-muted'}[s]||'pill-muted');
+    const statusText={idea:'Idea',research:'研究',validated:'已验证',paper:'纸面',shadow_live:'影子盘',limited_live:'受限实盘',live:'实盘',suspended:'已暂停',retired:'已退役'};
+    body.innerHTML=rows.map(s=>{
+      const m=s.metrics||{};
+      const badge=s.live_capable?'<span class="pill pill-ok">可实盘</span>':(s.validated?'<span class="pill pill-info">已验证·非实盘</span>':'<span class="pill pill-warn">未验证/研究</span>');
+      const evidence=(s.evidence_refs||[]).map(e=>`<code class="mono" title="${htmlAttr(e)}">${esc(String(e).slice(0,26))}</code>`).join(' ');
+      const metrics=[
+        m.oos_profit_factor!=null?`PF ${num(m.oos_profit_factor,2)}`:null,
+        m.oos_sharpe!=null?`Sharpe ${num(m.oos_sharpe,2)}`:null,
+        m.oos_max_drawdown!=null?`MDD ${num(Number(m.oos_max_drawdown)*100,1)}%`:null,
+        m.trade_count!=null?`N ${m.trade_count}`:null,
+      ].filter(Boolean).join(' · ')||'--';
+      const ranges=s.ranges||{};
+      return `<tr>
+        <td><b>${esc(s.strategy_id)}</b><div class="muted" style="font-size:10px">${esc(s.notes||'')}</div></td>
+        <td><span class="pill ${pillFor(s.status)}">${esc(statusText[s.status]||s.status)}</span></td>
+        <td class="mono">${esc(s.version||'')}</td>
+        <td class="mono muted" style="font-size:10px">${esc(ranges.train||'-')}<br>${esc(ranges.validation||'-')} / ${esc(ranges.test||'-')}</td>
+        <td class="mono" style="font-size:10px">${metrics}</td>
+        <td style="max-width:220px">${evidence||'<span class="muted">--</span>'}</td>
+        <td>${badge}<div class="muted" style="font-size:10px;margin-top:3px">${esc(s.advice||'')}</div></td>
+      </tr>`;
+    }).join('');
+  }catch(e){body.innerHTML=`<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">策略加载失败: ${esc(e.message)}</td></tr>`}
+}
+
+function expStatusPill(status){
+  const map={running:['pill-info','进行中'],completed:['pill-ok','完成'],failed:['pill-bad','失败'],promoted:['pill-ok','已晋升'],archived:['pill-muted','归档']};
+  const [cls,label]=map[status]||['pill-muted',status||'未知'];
+  return `<span class="pill ${cls}">${esc(label)}</span>`;
+}
+async function loadResearch(){
+  try{
+    const r=await fetch(API+'/api/research/experiments');
+    const d=await r.json();
+    const exps=d.experiments||[];
+    const badge=$('failedExpBadge');
+    if(badge){badge.style.display=d.failed_count?'':'none';badge.textContent=`失败实验 ${d.failed_count||0}`}
+    const ebody=$('experimentsBody');
+    if(ebody){
+      if(!exps.length)ebody.innerHTML='<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">实验登记簿为空（data/experiments/registry.jsonl 不存在）</td></tr>';
+      else ebody.innerHTML=exps.map(e=>{
+        const m=e.metrics||{};
+        return `<tr>
+          <td class="mono">${esc(e.experiment_id||'')}</td>
+          <td style="max-width:260px">${esc(e.hypothesis||'')}</td>
+          <td>${expStatusPill(e.status)}${e.status_update_reason?`<div class="muted" style="font-size:10px">${esc(e.status_update_reason)}</div>`:''}</td>
+          <td style="max-width:280px" class="muted">${esc(String(e.conclusion||'').slice(0,120))}</td>
+          <td class="mono" style="text-align:right">${m.oos_profit_factor!=null?num(m.oos_profit_factor,2):'--'}</td>
+          <td class="mono" style="text-align:right">${m.oos_sharpe!=null?num(m.oos_sharpe,2):'--'}</td>
+          <td class="mono" style="text-align:right">${m.oos_max_drawdown!=null?num(Number(m.oos_max_drawdown)*100,1)+'%':'--'}</td>
+        </tr>`;
+      }).join('');
+    }
+    const factors=d.factors||[];
+    const fbody=$('researchBody');
+    if(fbody){
+      if(!factors.length)fbody.innerHTML='<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">因子索引为空（尚未产出因子报告）</td></tr>';
+      else{
+        fbody.innerHTML=factors.map(f=>`<tr>
+          <td class="mono">${esc(f.name||'')}</td><td>${esc(f.family||'--')}</td><td class="mono">${esc(f.version||'')}</td>
+          <td class="mono" style="text-align:right" id="ic-${htmlAttr(f.name)}">--</td>
+          <td class="mono" style="text-align:right" id="icir-${htmlAttr(f.name)}">--</td>
+          <td class="mono" style="text-align:right">--</td>
+          <td>${expStatusPill(f.status)}</td></tr>`).join('');
+        // 拉取每份因子报告补 IC 值（缺失时保持 --，不伪造）
+        factors.slice(0,40).forEach(async f=>{
+          try{
+            const fr=await fetch(API+`/api/research/factors/${encodeURIComponent(f.name)}`);
+            if(!fr.ok)return;
+            const rep=await fr.json();
+            const best=Object.values(rep).filter(v=>v&&typeof v==='object'&&v.ic_rank_mean!=null)
+              .sort((a,b)=>(b.icir_rank||0)-(a.icir_rank||0))[0];
+            const icEl=$(`ic-${f.name}`),icirEl=$(`icir-${f.name}`);
+            if(best&&icEl)icEl.textContent=num(best.ic_rank_mean,4);
+            if(best&&icirEl)icirEl.textContent=best.icir_rank!=null?num(best.icir_rank,3):'--';
+            const ndEl=$(`ic-${f.name}`)?.parentElement?.querySelector('td:nth-child(6)');
+            if(best&&best.n_days!=null&&ndEl)ndEl.textContent=best.n_days;
+          }catch(e){}
+        });
+      }
+      if($('factorCountNote'))$('factorCountNote').textContent=factors.length?`共 ${factors.length} 个因子`:'';
+    }
+  }catch(e){
+    const ebody=$('experimentsBody');
+    if(ebody)ebody.innerHTML=`<tr><td colspan="7" class="muted" style="text-align:center;padding:18px">研究数据加载失败: ${esc(e.message)}</td></tr>`;
+  }
+}
+
+async function loadPipelineStrip(){
+  const box=$('pipelineStrip');
+  if(!box)return;
+  try{
+    const r=await fetch(API+'/api/execution/pipeline-strip');
+    const d=await r.json();
+    const items=d.items||[];
+    if(!items.length){box.innerHTML=`<span class="muted">${d.has_report?'今日报告没有正式推荐，无执行链路可展示':'今日暂无正式推荐报告'}</span>`;return}
+    const stage=(hit,label)=>`<span class="stage-item ${hit?'hit':''}">${hit?'●':'○'} ${label}</span>`;
+    box.innerHTML=items.map(it=>`<span class="stage-item hit" style="border-style:solid"><b>${esc(it.name||it.code||'')}</b><span class="mono">${esc(it.code||'')}</span></span>`
+      +stage(it.plan_staged,'计划')
+      +stage(it.order_submitted,'下单')
+      +stage(it.acknowledged,'确认')
+      +stage(it.filled,'成交')
+      +`<span class="pill ${orderPill(it.order_status)[0]}">${esc(orderPill(it.order_status)[1])}</span>`
+    ).join('<span class="muted">|</span>');
+  }catch(e){box.innerHTML='<span class="muted">执行链路加载失败</span>'}
 }
 </script>
 </body>

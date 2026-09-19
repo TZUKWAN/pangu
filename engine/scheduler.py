@@ -12,6 +12,8 @@
     4. report（生成 Markdown 简报）
     5. recommendation-loop（记录正式推荐、因果上下文并前向复盘）
     6. notify（如果 PANGU_NOTIFY_WEBHOOK 已配置）
+    4.5 execution-loop（可选，默认关闭：cfg.execution.enabled=true 时在 report
+        之后执行 Pangu 2.0 每日交易循环）
 
 状态与日志：
     - 写 JSON：data/scheduler/YYYYMMDD_status.json
@@ -179,6 +181,26 @@ class DailyScheduler:
         self.report_path = save_report(result, report_dir, force_degraded=self.force_degraded)
         return {"report_path": str(self.report_path), "degraded": self.force_degraded or result.data_quality != "ok"}
 
+    def _step_execution_loop(self) -> dict[str, Any]:
+        """Pangu 2.0 每日执行循环（默认关闭：execution.enabled=true 才启用）。
+
+        消费 scan 步骤的 pipeline_result：数据质量闸 → 策略权威闸 → 组合计划
+        → 风控 → OMS 下单（默认 PAPER 模式）→ 对账。任何闸门不过都不下单。
+        """
+        exec_cfg = self.cfg.get("execution") or {}
+        if not exec_cfg.get("enabled", False):
+            return {"enabled": False, "status": "skipped", "reason": "execution.enabled 未开启"}
+        if self.pipeline_result is None:
+            raise RuntimeError("无选股结果，无法执行每日交易循环")
+        from .daily_loop import run_daily_loop
+
+        result = run_daily_loop(
+            date=self.date,
+            pipeline_result=self.pipeline_result,
+            cfg=self.cfg,
+        )
+        return result.to_dict() if hasattr(result, "to_dict") else dict(result)
+
     def _step_recommendation_loop(self) -> dict[str, Any]:
         if self.pipeline_result is None:
             raise RuntimeError("无选股结果，无法记录推荐与执行短期复盘")
@@ -288,6 +310,14 @@ class DailyScheduler:
             self._step_report,
             skip=self.dry_run,
         ))
+
+        # 4.5 执行循环（可选步骤，默认关闭：execution.enabled=true 才加入步骤列表）
+        if bool((self.cfg.get("execution") or {}).get("enabled", False)):
+            self.results.append(self._run_step(
+                "execution_loop",
+                self._step_execution_loop,
+                skip=self.dry_run,
+            ))
 
         # 5. 推荐记录 + 精确日期上下文 + 严格短期复盘。
         data_quality_after_scan = (

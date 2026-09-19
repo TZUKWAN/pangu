@@ -212,17 +212,14 @@ def _start_scheduler() -> None:
 
 
 def _build_pipeline(cfg: dict[str, Any]) -> Pipeline:
-    """从配置构造 Pipeline（与 cli._build_pipeline 保持一致）。"""
-    return Pipeline(
-        dl=build_data_loader(cfg),
-        sentiment_cfg=cfg.get("sentiment", {}),
-        trend_cfg=cfg.get("trend", {}),
-        guard_cfg=cfg.get("guard", {}),
-        entry_exit_cfg=cfg.get("entry_exit", cfg),  # 期望整个 cfg
-        pick_count=cfg.get("output", {}).get("pick_count", 5),
-        db_path=cfg.get("output", {}).get("db_path", "data/pangu.db"),
-        full_cfg=cfg,
-    )
+    """从配置构造 Pipeline。
+
+    P0-005 统一入口契约：web 与 cli/repl/scheduler 一样，必须走
+    PipelineFactory.from_config(cfg, mode="web")，禁止再内联拼装 Pipeline，
+    防止各入口配置注入漂移（有 test_pipeline_entrypoint_consistency.py 锁住）。
+    """
+    from .pipeline_factory import PipelineFactory
+    return PipelineFactory.from_config(cfg, mode="web")
 
 
 def get_pipeline() -> Pipeline:
@@ -1098,6 +1095,10 @@ app = FastAPI(
     default_response_class=_NanSafeJSONResponse,
 )
 
+# Phase 11：执行/策略/研究产品化 API（router 形式，保持 server 主文件清晰）
+from .execution_api import router as _execution_api_router  # noqa: E402
+app.include_router(_execution_api_router)
+
 
 @app.get("/")
 async def index():
@@ -1242,6 +1243,54 @@ async def api_recommendation_record_latest():
     return {"ok": True, "recorded": recorded}
 
 
+@app.get("/api/execution/pipeline-strip")
+async def api_execution_pipeline_strip():
+    """今日信号→目标→订单→确认→成交 链路条。
+
+    把最新报告的 final_recommendations 与 OMS 订单库按代码交叉引用，
+    展示每只正式推荐今天走到了哪一步。无报告/无订单时显式为空，不伪造进度。
+    """
+    from .execution_api import orders_index, symbol_matches
+
+    data = _latest_result or _find_latest_report() or {}
+    recs = data.get("final_recommendations") or []
+    index = orders_index(limit=500)
+    submitted_plus = {"SUBMITTED", "ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED",
+                      "CANCEL_PENDING", "UNKNOWN"}
+    acked_plus = {"ACKNOWLEDGED", "PARTIALLY_FILLED", "FILLED"}
+    items = []
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        code = str(rec.get("code") or "")
+        matches: list[dict[str, Any]] = []
+        for sym, orders in index.items():
+            if symbol_matches(sym, code):
+                matches.extend(orders)
+        matches.sort(key=lambda o: str(o.get("created_at") or ""), reverse=True)
+        best = matches[0] if matches else None
+        status = str((best or {}).get("status") or "")
+        items.append({
+            "code": code,
+            "name": rec.get("name"),
+            "signal": True,
+            "plan_staged": best is not None,
+            "order_submitted": status in submitted_plus,
+            "acknowledged": status in acked_plus,
+            "filled": status == "FILLED",
+            "order_status": status or None,
+            "client_order_id": (best or {}).get("client_order_id"),
+            "decision_id": (best or {}).get("decision_id"),
+            "order_count": len(matches),
+        })
+    return {
+        "items": items,
+        "date": data.get("date"),
+        "count": len(items),
+        "has_report": bool(data) and not data.get("empty"),
+    }
+
+
 def _safe_strategy_settings(cfg: dict[str, Any]) -> dict[str, Any]:
     return {
         "xuanwu_pool": cfg.get("xuanwu_pool", {}),
@@ -1281,7 +1330,17 @@ async def api_settings_get():
         "ok": True,
         "strategy": _safe_strategy_settings(cfg),
         "llm": {"providers": safe_providers},
+        "execution": _execution_settings_view(),
     }
+
+
+def _execution_settings_view() -> dict[str, Any]:
+    """执行默认值只读摘要（速率限制/模式），读不到时显式降级。"""
+    try:
+        from .execution_api import execution_settings_summary
+        return execution_settings_summary()
+    except Exception as e:  # noqa: BLE001
+        return {"status": "unavailable", "reason": f"执行设置读取失败: {e}"}
 
 
 @app.post("/api/settings")
