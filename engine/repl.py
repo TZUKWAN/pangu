@@ -41,6 +41,9 @@ from .config import build_data_loader, load_config
 console = Console()
 logger = logging.getLogger("pangu.repl")
 
+# 项目根（engine/ 的上一级），供读 data/reports 等相对资产使用
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 # ====================================================================== #
 # 渲染辅助
@@ -109,7 +112,7 @@ def show_candidates(cands: list[dict], title: str = "今日推荐") -> None:
     t.add_column("代码", style="dim")
     t.add_column("名称", style="bold")
     t.add_column("推荐度", justify="right")
-    t.add_column("上涨概率", justify="right")
+    t.add_column("原始分", justify="right")
     t.add_column("预测涨幅", justify="right")
     t.add_column("盈亏比", justify="right")
     t.add_column("买点", justify="right", style="yellow")
@@ -182,21 +185,19 @@ def cmd_sentiment(cfg: dict) -> None:
     console.print()
 
 
+def _build_scan_pipeline(cfg: dict):
+    """REPL 选股链路的 Pipeline 构造（与 cli 完全一致：委托工厂、传 full_cfg）。"""
+    from .pipeline_factory import PipelineFactory
+
+    return PipelineFactory.from_config(cfg, mode="repl")
+
+
 def cmd_scan(cfg: dict) -> None:
     """完整选股链路。"""
     console.print()
     with console.status("[bold cyan]选股中（情绪→趋势→护栏→买卖点，约2-4分钟）…", spinner="moon"):
         try:
-            from .pipeline import Pipeline
-            pipe = Pipeline(
-                dl=build_data_loader(cfg),
-                sentiment_cfg=cfg.get("sentiment", {}),
-                trend_cfg=cfg.get("trend", {}),
-                guard_cfg=cfg.get("guard", {}),
-                entry_exit_cfg=cfg.get("entry_exit", cfg),
-                pick_count=cfg.get("output", {}).get("pick_count", 5),
-                db_path=cfg.get("output", {}).get("db_path", "data/pangu.db"),
-            )
+            pipe = _build_scan_pipeline(cfg)
             result = pipe.run()
         except Exception as e:  # noqa: BLE001
             console.print(f"[red]✗ 选股失败：{e}[/]")

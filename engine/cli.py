@@ -18,6 +18,7 @@ import json
 import logging
 import sys
 from pathlib import Path
+from typing import Any, Optional
 
 import pandas as pd
 
@@ -123,17 +124,10 @@ def cmd_pools(args: argparse.Namespace, cfg: dict) -> int:
 
 
 def _build_pipeline(cfg: dict) -> Pipeline:
-    """从配置统一构造 Pipeline（含 entry_exit / db_path / full_cfg）。"""
-    return Pipeline(
-        dl=build_data_loader(cfg),
-        sentiment_cfg=cfg.get("sentiment", {}),
-        trend_cfg=cfg.get("trend", {}),
-        guard_cfg=cfg.get("guard", {}),
-        entry_exit_cfg=cfg.get("entry_exit", cfg),  # kimi 的 engine 期望整个 cfg
-        pick_count=cfg.get("output", {}).get("pick_count", 5),
-        db_path=cfg.get("output", {}).get("db_path", "data/pangu.db"),
-        full_cfg=cfg,
-    )
+    """从配置统一构造 Pipeline（委托 PipelineFactory，与 repl/web 保持一致）。"""
+    from .pipeline_factory import PipelineFactory
+
+    return PipelineFactory.from_config(cfg, mode="cli")
 
 
 def cmd_rps_build(args: argparse.Namespace, cfg: dict) -> int:

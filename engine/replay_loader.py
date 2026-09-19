@@ -104,6 +104,7 @@ class ReplayDataLoader:
         self._bars_by_date: dict[str, pd.DataFrame] = {}
         self._spot_cache: dict[str, pd.DataFrame] = {}
         self._regime_cache: dict[str, dict[str, Any]] = {}
+        self._conn: Optional[sqlite3.Connection] = None
         self._probe()
         if preload:
             self._preload_bars()
@@ -191,13 +192,34 @@ class ReplayDataLoader:
     # 基础数据
     # ------------------------------------------------------------------ #
     def _day_bars(self, date: Optional[str] = None) -> pd.DataFrame:
-        """某日全市场日线行（内存索引）。"""
+        """某日全市场日线行（preload=True 走内存索引；否则回退按日 SQL 查询）。"""
         d = date or self._current_date
         if d is None:
             return pd.DataFrame()
         if self._bars_by_date:
             return self._bars_by_date.get(d, pd.DataFrame())
-        return pd.DataFrame()
+        return self._load_day_bars_sql(str(d))
+
+    def _load_day_bars_sql(self, d: str) -> pd.DataFrame:
+        """preload=False 时的按日查询（与内存路径同样的列/类型归一）。"""
+        with _connect_ro(self.db_path) as conn:
+            df = pd.read_sql_query(
+                """SELECT date,code,open,high,low,close,preclose,volume,amount,
+                          pct_change,turnover,is_st
+                   FROM breadth_raw WHERE date=?""",
+                conn,
+                params=(d,),
+            )
+        if df.empty:
+            return pd.DataFrame()
+        df = df.copy()
+        df["code"] = df["code"].map(_normalize_code)
+        df["date"] = df["date"].astype(str)
+        for col in ("open", "high", "low", "close", "preclose", "volume",
+                    "amount", "pct_change", "turnover"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df["is_st"] = df["is_st"].astype(bool)
+        return df
 
     def _universe_names(self) -> dict[str, str]:
         if self._universe:
