@@ -232,6 +232,8 @@ class Pipeline:
         """激活 PIT-safe 历史回放数据面（按需惰性构建并随日期切换）。"""
         from .replay_loader import ReplayDataLoader
 
+        # 档案日期为紧凑 YYYYMMDD；接受 ISO 输入并归一，避免字符串比较错位
+        date = str(date).replace("-", "")
         if self._replay_loader is None:
             archive_cfg = (self.full_cfg.get("replay") or {})
             self._replay_loader = ReplayDataLoader(

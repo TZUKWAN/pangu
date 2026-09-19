@@ -104,6 +104,9 @@ class ReplayBacktester:
         loader: Optional[ReplayDataLoader] = None,
     ) -> None:
         self.cfg = cfg
+        # 档案日期为紧凑 YYYYMMDD；入口统一归一，接受 ISO 输入
+        cfg.start_date = str(cfg.start_date).replace("-", "")
+        cfg.end_date = str(cfg.end_date).replace("-", "")
         self.full_cfg = load_config(cfg.settings_path)
         if cfg.settings_override:
             self._deep_merge(self.full_cfg, cfg.settings_override)
