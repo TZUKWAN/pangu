@@ -182,6 +182,49 @@ def main() -> None:
     out = out_dir / f"alpha158_valid_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.json"
     out.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     print("written:", out)
+    # register into the append-only experiment registry (audit trail)
+    try:
+        from engine.validation.experiment_registry import ExperimentRegistry
+        reg = ExperimentRegistry()
+        for m, r in results.items():
+            if "error" in r:
+                reg.register({
+                    "experiment_id": f"ml_alpha158_{m}_baseline",
+                    "hypothesis": f"Alpha158 + {m} baseline predicts next-day return",
+                    "economic_rationale": "standard qlib benchmark features",
+                    "data": "qlib dump of PITStore", "pit_status": "train/valid split, holdout untouched",
+                    "universe": "all instruments", "decision_time": "15:05 T",
+                    "execution_time": "T+1 close→T+2 close label",
+                    "features": ["Alpha158"], "label": "Ref($close,-2)/Ref($close,-1)-1",
+                    "train_range": str(TRAIN), "validation_range": str(VALID),
+                    "test_range": "not touched", "costs": "n/a (IC study)",
+                    "slippage": "n/a", "capacity": "n/a", "baseline": "zero-IC null",
+                    "parameters": {}, "optimization_method": "default hyperparams",
+                    "n_variants_tried": 1, "metrics": {"error": r["error"]},
+                    "leakage_audit": {"fit_window_train_only": True},
+                    "independent_backtest": "not_applicable_ic_study",
+                    "conclusion": f"error: {r['error']}", "status": "failed",
+                    "family": "ml_baseline"})
+            else:
+                reg.register({
+                    "experiment_id": f"ml_alpha158_{m}_baseline",
+                    "hypothesis": f"Alpha158 + {m} baseline predicts next-day return",
+                    "economic_rationale": "standard qlib benchmark features",
+                    "data": "qlib dump of PITStore", "pit_status": "train/valid split, holdout untouched",
+                    "universe": "all instruments", "decision_time": "15:05 T",
+                    "execution_time": "T+1 close→T+2 close label",
+                    "features": ["Alpha158"], "label": "Ref($close,-2)/Ref($close,-1)-1",
+                    "train_range": str(TRAIN), "validation_range": str(VALID),
+                    "test_range": "not touched", "costs": "n/a (IC study)",
+                    "slippage": "n/a", "capacity": "n/a", "baseline": "zero-IC null",
+                    "parameters": {}, "optimization_method": "default hyperparams",
+                    "n_variants_tried": 1, "metrics": r,
+                    "leakage_audit": {"fit_window_train_only": True},
+                    "independent_backtest": "not_applicable_ic_study",
+                    "conclusion": "weak_positive_ic_baseline" if (r.get("ic_rank_mean") or 0) > 0 else "no_ic",
+                    "status": "evaluated", "family": "ml_baseline"})
+    except Exception as e:  # noqa: BLE001
+        print("registry append failed:", repr(e))
 
 
 if __name__ == "__main__":

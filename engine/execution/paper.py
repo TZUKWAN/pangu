@@ -135,7 +135,14 @@ class PaperBroker(BrokerAdapter):
     @staticmethod
     def _price_limit_band(symbol: str, preclose: float, is_st: bool) -> tuple:
         base = symbol.split(".")[-1] if "." in symbol else symbol
-        ratio = 0.20 if (is_st or base.startswith("3") or base.startswith("68")) else 0.10
+        # ST → 5%（与 engine/validation/data_interface 一致）；
+        # 创业板 sz.3 / 科创板 sh.68 → 20%；其余 10%。
+        if is_st:
+            ratio = 0.05
+        elif base.startswith("3") or base.startswith("68"):
+            ratio = 0.20
+        else:
+            ratio = 0.10
         return round(preclose * (1 + ratio), 2), round(preclose * (1 - ratio), 2)
 
     def set_date(self, date_str: str) -> None:
@@ -195,6 +202,11 @@ class PaperBroker(BrokerAdapter):
                 if side == "BUY":
                     if not (order.limit_price < limit_up):
                         reason = "limit_up_unbuyable"
+                    elif float(quote.get("low") or 0) > 0 and \
+                            order.limit_price < float(quote["low"]):
+                        # 限价低于当日最低价：非可成交限价单，日频模拟中
+                        # 保守地拒绝（而不是按限价立即成交）
+                        reason = "not_marketable_below_low"
                     else:
                         qty = (order.qty // 100) * 100
                         if qty <= 0:
@@ -216,6 +228,10 @@ class PaperBroker(BrokerAdapter):
                 else:
                     if not (order.limit_price > limit_down):
                         reason = "limit_down_unsellable"
+                    elif float(quote.get("high") or 0) > 0 and \
+                            order.limit_price > float(quote["high"]):
+                        # 限价高于当日最高价：非可成交限价单，保守拒绝
+                        reason = "not_marketable_above_high"
                     else:
                         avail = conn.execute(
                             "SELECT COALESCE(SUM(qty), 0) FROM lots WHERE symbol = ? AND buy_date < ?",

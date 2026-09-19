@@ -75,16 +75,27 @@ class TestBuyFills:
                 broker.submit_order(make_order(symbol=sym, qty=100, price=11.9)))
             assert rec.status == OrderStatus.FILLED.value, sym
 
-    def test_st_band_20pct(self, tmp_path):
+    def test_st_band_5pct(self, tmp_path):
+        # 红队修复后正确语义：ST 涨跌停带宽 5%（原测试错误地断言 20%）
         b = PaperBroker(db_path=str(tmp_path / "p.db"), quote_provider=make_quote(st_symbols=("sh.600100",)),
                         initial_cash=100_000.0)
         b.connect()
         b.set_date(D0)
-        ok = b.query_order(b.submit_order(make_order(symbol="sh.600100", price=11.9)))
-        assert ok.status == OrderStatus.FILLED.value          # ST limit_up=12.0
-        bad = b.query_order(b.submit_order(make_order(symbol="sh.600100", price=12.0, cid="t-d-s-002")))
+        ok = b.query_order(b.submit_order(make_order(symbol="sh.600100", price=10.4)))
+        assert ok.status == OrderStatus.FILLED.value          # ST limit_up=10.5
+        bad = b.query_order(b.submit_order(make_order(symbol="sh.600100", price=10.5, cid="t-d-s-002")))
         assert bad.status == OrderStatus.REJECTED.value
         assert bad.raw["reject_reason"] == "limit_up_unbuyable"
+
+    def test_non_marketable_limit_rejected(self, tmp_path):
+        # 限价低于当日最低价的买单不可成交，保守拒绝而非按限价立即成交
+        b = PaperBroker(db_path=str(tmp_path / "p.db"), quote_provider=make_quote(),
+                        initial_cash=100_000.0)
+        b.connect()
+        b.set_date(D0)
+        rec = b.query_order(b.submit_order(make_order(symbol="sh.600000", price=7.0)))
+        assert rec.status == OrderStatus.REJECTED.value
+        assert rec.raw["reject_reason"] == "not_marketable_below_low"
 
     def test_insufficient_cash_rejected(self, broker):
         rec = broker.query_order(broker.submit_order(make_order(qty=100_000, price=10.0)))

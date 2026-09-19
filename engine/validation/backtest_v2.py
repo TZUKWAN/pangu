@@ -72,12 +72,20 @@ class HistoryView:
     """包一层面板 + 交易日历；任何触及 > asof 日期的访问抛 LookaheadError。"""
 
     def __init__(self, data: ResearchData, panel: pd.DataFrame,
-                 trading_days: Sequence[str], max_date: str):
+                 trading_days: Sequence[str], max_date: str,
+                 positions: dict | None = None):
         self._data = data
         self._panel = panel
         self._days = [str(d) for d in trading_days]
         self._max = _iso(max_date)
         self._dates = panel.index.get_level_values("date")
+        # 决策日收盘时的持仓快照（symbol -> qty），只读；策略用它决定卖出目标。
+        self._positions = {str(k): int(v) for k, v in (positions or {}).items() if int(v) > 0}
+
+    @property
+    def open_positions(self) -> dict[str, int]:
+        """当前持仓快照（只读副本）。"""
+        return dict(self._positions)
 
     @property
     def asof(self) -> str:
@@ -248,7 +256,9 @@ class BacktestV2:
                          "equity": equity, "n_positions": n_pos})
             # -- 4) 当日收盘决策（若还有下一交易日） --------------------------
             if i < len(days) - 1:
-                view = HistoryView(self.data, panel, days, t)
+                snap = {s: sum(int(l["qty"]) for l in ls) for s, ls in lots.items()
+                        if sum(int(l["qty"]) for l in ls) > 0}
+                view = HistoryView(self.data, panel, days, t, positions=snap)
                 targets = strategy.rebalance(t, view) or []
                 pending, pending_dec, pending_equity = self._enforce(
                     targets, t, equity, lots, events)

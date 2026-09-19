@@ -24,6 +24,34 @@ DEFAULT_HORIZONS = (1, 3, 5, 10, 20)
 # 只读缓存视图（PIT 硬切片）
 # ---------------------------------------------------------------------------
 
+class _AsofView:
+    """包住 _CachedData：任何 daily_panel 访问被硬切到 <= 当前 compute asof。
+
+    结构性保证特征只用到 <= d 的数据（红队 finding 2 修复），
+    而不是依赖各因子自觉。
+    """
+
+    def __init__(self, cached: "_CachedData", asof: str):
+        self._cached = cached
+        self._asof = str(asof)
+
+    def daily_panel(self, start, end, symbols=None):
+        return self._cached.daily_panel(start, min(str(end), self._asof), symbols)
+
+    def universe(self, date):
+        return self._cached.universe(min(str(date), self._asof))
+
+    def index_daily(self, code, start, end):
+        return self._cached.index_daily(code, start, min(str(end), self._asof))
+
+    def trading_days(self, start, end):
+        return self._cached.trading_days(start, min(str(end), self._asof))
+
+    @property
+    def panel(self):
+        return self._cached.daily_panel(self._cached._dates[0], self._asof)             if self._cached._dates else self._cached.panel.iloc[0:0]
+
+
 class _CachedData:
     """包装 ResearchData：全量面板取一次，daily_panel 每次硬切片 date<=end。"""
 
@@ -162,7 +190,7 @@ def evaluate_factor(factor: Factor, data, start: str, end: str,
         uni = codes_by_date.get(d)
         if uni is None or len(uni) == 0:
             continue
-        s = factor.compute(d, uni, cached)
+        s = factor.compute(d, uni, _AsofView(cached, d))
         feats[d] = pd.Series(s, index=pd.Index([str(c) for c in uni])).reindex(uni)
     if not feats:
         raise ValueError("factor produced no features on any decision date")
@@ -272,7 +300,7 @@ def evaluate_factor(factor: Factor, data, start: str, end: str,
         "pit_checks": {
             "max_feature_date": max(used_dates) if used_dates else None,
             "max_label_date": max(label_dates) if label_dates else None,
-            "feature_used_only_past": True,   # 结构性保证：特征只经 <= asof 硬切片
+            "feature_used_only_past": True,   # _AsofView 硬切片保证（结构性强制的）
         },
         "metric_notes": {
             "long_short_spread": "research metric only, not a tradable signal",
