@@ -1,0 +1,10 @@
+{
+  "linear": {
+    "model": "linear",
+    "error": "ValueError('Input y contains NaN.')"
+  },
+  "lgb": {
+    "model": "lgb",
+    "error": "OSError(22, '动态链接库(DLL)初始化例程失败。', None, 1114)"
+  }
+}

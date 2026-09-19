@@ -1,0 +1,10 @@
+{
+  "linear": {
+    "model": "linear",
+    "error": "ValueError('too many values to unpack (expected 2)')"
+  },
+  "lgb": {
+    "model": "lgb",
+    "error": "ValueError('too many values to unpack (expected 2)')"
+  }
+}

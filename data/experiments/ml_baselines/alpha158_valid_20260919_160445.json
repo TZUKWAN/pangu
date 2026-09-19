@@ -1,0 +1,41 @@
+{
+  "linear": {
+    "ic_rank_mean": 0.020393054797759793,
+    "ic_rank_std": 0.1061270068322527,
+    "icir_rank": 0.1921570711024916,
+    "n_days": 126,
+    "ic_pearson_mean": 0.006296807209261915,
+    "top_bottom_spread_mean": 0.0003580298216547817,
+    "top_bottom_n_days": 126,
+    "model": "linear",
+    "train": [
+      142110,
+      158
+    ],
+    "valid": [
+      85640,
+      158
+    ],
+    "elapsed_s": 61.0
+  },
+  "lgb": {
+    "ic_rank_mean": 0.013728959018052081,
+    "ic_rank_std": 0.09039559024720013,
+    "icir_rank": 0.15187642428693932,
+    "n_days": 126,
+    "ic_pearson_mean": 0.038274987744066055,
+    "top_bottom_spread_mean": 0.0011802256340160966,
+    "top_bottom_n_days": 126,
+    "model": "lgb",
+    "train": [
+      142110,
+      158
+    ],
+    "valid": [
+      85640,
+      158
+    ],
+    "best_iter": 1,
+    "elapsed_s": 59.9
+  }
+}

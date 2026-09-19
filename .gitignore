@@ -21,6 +21,8 @@ CLAUDE_STATE.md
 # Local market data, reports, runtime artifacts, and DB files
 data/*
 !data/.gitkeep
+# experiment registry and reports must be tracked (audit trail)
+!data/experiments/
 *.db
 *.sqlite
 *.sqlite3
