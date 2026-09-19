@@ -81,8 +81,13 @@ def backfill_stock(conn: sqlite3.Connection, code: str, start: str, end: str) ->
     return code, f"{len(rows)}"
 
 
+def _to_dash(day: str) -> str:
+    return day if "-" in day else f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+
+
 def backfill_universe_day(conn: sqlite3.Connection, day: str) -> int:
-    rs = bs.query_all_stock(day=day)
+    # baostock API 需要 YYYY-MM-DD；库内统一存 YYYYMMDD
+    rs = bs.query_all_stock(day=_to_dash(day))
     rows = []
     while rs.error_code == "0" and rs.next():
         code, name = rs.get_row_data()[0], rs.get_row_data()[1]

@@ -1,0 +1,48 @@
+{
+  "strategy_id": "事件驱动",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+    "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+    "decision_time": "15:05",
+    "entry": "T+1 open zone"
+  },
+  "metrics": {
+    "source": "data/research/replay_backtest_allpools_final.json",
+    "research_only": true,
+    "window": "20260410-20260720",
+    "trades": 38,
+    "success_rate": 0.3684,
+    "profit_factor": 0.777,
+    "max_drawdown": 0.4888,
+    "avg_net_return": -0.0067,
+    "caveat": "research_only_below_promotion_gates"
+  },
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-19T00:00:00+08:00",
+  "evidence_refs": [
+    "replay_backtest_20260410_20260720.json",
+    "replay_backtest_20260727_20260904.json",
+    "replay_backtest_20260410_20260901_w0_00.json",
+    "replay_backtest_20260410_20260901_w0_01.json",
+    "replay_backtest_20260410_20260901_w2_00.json",
+    "replay_backtest_20260410_20260901_w2_01.json",
+    "replay_backtest_20260410_20260901_w1_00.json",
+    "replay_backtest_20260410_20260901_w1_01.json",
+    "replay_backtest_20260410_20260901_w3_00.json",
+    "replay_backtest_20260410_20260901_w3_01.json",
+    "replay_backtest_20260721_20260724.json",
+    "replay_backtest_20260801_20260904_acceptance.json",
+    "replay_backtest_allpools_final.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘；已有研究性回测（PF 0.777）远低于晋级门槛，仅供参考"
+}

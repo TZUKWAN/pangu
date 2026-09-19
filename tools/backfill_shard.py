@@ -92,11 +92,25 @@ def main() -> None:
         have_days = {r[0] for r in conn.execute("SELECT DISTINCT date FROM breadth_universe")}
         todo = [d for d in trade_days if d <= "20260127" and d not in have_days]
         print(f"[meta] universe days to fill: {len(todo)}", flush=True)
+        fails = 0
         for i, day in enumerate(todo):
             try:
-                backfill_universe_day(conn, day)
+                n = backfill_universe_day(conn, day)
+                if n == 0:
+                    raise RuntimeError(f"empty result for {day}")
+                fails = 0
             except Exception as e:  # noqa: BLE001
-                print(f"[meta] universe {day} error: {e}", flush=True)
+                fails += 1
+                print(f"[meta] universe {day} error({fails}): {e}", flush=True)
+                if fails >= 3:
+                    print("[meta] relogin + cooldown 30s", flush=True)
+                    try:
+                        bs.logout()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    time.sleep(30)
+                    bs.login()
+                    fails = 0
             if (i + 1) % 50 == 0:
                 print(f"[meta] universe {i+1}/{len(todo)}", flush=True)
         backfill_indices(conn, "2022-01-01", "2026-09-19")
