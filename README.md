@@ -276,3 +276,27 @@ python -m engine.cli rps-build
 ---
 
 *盘古 Pangu · 用真实数据和明确规则，把 A 股选股变成可解释、可审计、可拒绝的过程。*
+
+
+---
+
+## Pangu 2.0（pangu-2-rebuild 分支）
+
+新增 PIT 研究验证与可控执行栈（详见 `docs/pangu2/`）：
+
+- `docs/pangu2/ARCHITECTURE.md` — 架构与模块地图
+- `docs/pangu2/DATA_DICTIONARY.md` — 数据字典与 PIT 规范
+- `docs/pangu2/RESEARCH_PROTOCOL.md` — 研究纪律（holdout/成本/登记）
+- `docs/pangu2/STRATEGY_VALIDATION_REPORT.md` — 最终策略验证（诚实结论：无策略达 paper 线）
+- `docs/pangu2/UAT_AND_REGRESSION_REPORT.md` — UAT 覆盖矩阵与回归
+- 实验登记：`data/experiments/registry.jsonl`（append-only，失败可见）
+
+一键启动：
+```bash
+.venv/Scripts/python -m engine.web --port 8000   # Web 产品（默认 PAPER 模式）
+.venv/Scripts/python -m engine.cli doctor        # 健康检查
+.venv/Scripts/python -m engine.cli replay-backtest --start 20260410 --end 20260720
+```
+
+恢复要点：LIVE 永远关闭，除非策略注册表 live 状态 + 合规 CONFIRMED + LiveGate 全检通过；
+执行域状态在 `data/execution.db`（订单/对账/注册表/kill switch）；Paper 账户在 `data/paper_broker.db`。
