@@ -88,8 +88,12 @@ def walkforward_days(data, start, end, test_len=60, step=60, min_hist=120):
 
 
 def to_qlib_symbol(code: str) -> str:
-    market, num = code.split(".")
-    return ("SH" if market == "sh" else "SZ") + num
+    s = str(code)
+    if "." in s:
+        market, num = s.split(".", 1)
+        return ("SH" if market == "sh" else "SZ") + num
+    num = s.zfill(6)
+    return ("SH" if num.startswith(("6", "9", "5")) else "SZ") + num
 
 
 def main() -> None:

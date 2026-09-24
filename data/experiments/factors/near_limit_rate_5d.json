@@ -1,0 +1,138 @@
+{
+  "name": "near_limit_rate_5d",
+  "version": "1.0.0",
+  "family": "structure",
+  "description": "近5日接近涨停频率（当日涨幅≥0.9×涨跌停幅度）",
+  "economic_hypothesis": "频频冲高至涨停附近说明买方持续封板意愿，是未确认的涨停前兆（封板压力假说）。",
+  "status": "evaluated",
+  "factor": {
+    "name": "near_limit_rate_5d",
+    "version": "1.0.0",
+    "family": "structure",
+    "description": "近5日接近涨停频率（当日涨幅≥0.9×涨跌停幅度）",
+    "economic_hypothesis": "频频冲高至涨停附近说明买方持续封板意愿，是未确认的涨停前兆（封板压力假说）。"
+  },
+  "start": "2022-01-04",
+  "end": "2025-12-31",
+  "quantiles": 5,
+  "horizons": {
+    "1": {
+      "ic_mean_pearson": 0.00971131,
+      "ic_mean_spearman": -0.02894551,
+      "icir": -0.41056956,
+      "t_stat": -12.76072375,
+      "n_days": 966,
+      "coverage_mean": 4920.37163561,
+      "quantile_returns": {
+        "q1": 0.00039607,
+        "q2": 0.00052876,
+        "q3": 0.00047021,
+        "q4": 0.00053989,
+        "q5": 0.00061885
+      },
+      "long_short_spread": 0.00022278,
+      "monotonicity": 0.9,
+      "ic_first_half": -0.02720058,
+      "ic_second_half": -0.03069045,
+      "ic_high_vol": -0.02774638,
+      "ic_low_vol": -0.03026405
+    },
+    "3": {
+      "ic_mean_pearson": -0.01900949,
+      "ic_mean_spearman": -0.04504015,
+      "icir": -0.67339005,
+      "t_stat": -20.90764969,
+      "n_days": 964,
+      "coverage_mean": 4917.0746888,
+      "quantile_returns": {
+        "q1": 0.00169756,
+        "q2": 0.0020167,
+        "q3": 0.00158868,
+        "q4": 0.00194703,
+        "q5": 0.00046998
+      },
+      "long_short_spread": -0.00122758,
+      "monotonicity": -0.5,
+      "ic_first_half": -0.04205685,
+      "ic_second_half": -0.04802345,
+      "ic_high_vol": -0.04523125,
+      "ic_low_vol": -0.04484716
+    },
+    "5": {
+      "ic_mean_pearson": -0.03253193,
+      "ic_mean_spearman": -0.05251897,
+      "icir": -0.77287233,
+      "t_stat": -23.97150471,
+      "n_days": 962,
+      "coverage_mean": 4913.77546778,
+      "quantile_returns": {
+        "q1": 0.0029679,
+        "q2": 0.00339575,
+        "q3": 0.00277083,
+        "q4": 0.00332294,
+        "q5": 0.00042699
+      },
+      "long_short_spread": -0.00254091,
+      "monotonicity": -0.5,
+      "ic_first_half": -0.04933344,
+      "ic_second_half": -0.0557045,
+      "ic_high_vol": -0.05128436,
+      "ic_low_vol": -0.05368537
+    },
+    "10": {
+      "ic_mean_pearson": -0.04551123,
+      "ic_mean_spearman": -0.06078776,
+      "icir": -0.92982282,
+      "t_stat": -28.76445619,
+      "n_days": 957,
+      "coverage_mean": 4905.57366771,
+      "quantile_returns": {
+        "q1": 0.0058317,
+        "q2": 0.00666814,
+        "q3": 0.00553585,
+        "q4": 0.00624241,
+        "q5": 0.00101601
+      },
+      "long_short_spread": -0.00481569,
+      "monotonicity": -0.5,
+      "ic_first_half": -0.05881554,
+      "ic_second_half": -0.06275587,
+      "ic_high_vol": -0.05787108,
+      "ic_low_vol": -0.06311668
+    },
+    "20": {
+      "ic_mean_pearson": -0.05377957,
+      "ic_mean_spearman": -0.06629661,
+      "icir": -0.98565846,
+      "t_stat": -30.33202778,
+      "n_days": 947,
+      "coverage_mean": 4889.32946146,
+      "quantile_returns": {
+        "q1": 0.01156982,
+        "q2": 0.01384105,
+        "q3": 0.01153822,
+        "q4": 0.01208373,
+        "q5": 0.00417809
+      },
+      "long_short_spread": -0.00739173,
+      "monotonicity": -0.5,
+      "ic_first_half": -0.06577987,
+      "ic_second_half": -0.06681225,
+      "ic_high_vol": -0.06201246,
+      "ic_low_vol": -0.07042564
+    }
+  },
+  "pit_checks": {
+    "max_feature_date": "2025-12-31",
+    "max_label_date": "2025-12-31",
+    "feature_used_only_past": true,
+    "research_window": [
+      "2022-01-04",
+      "2025-12-31"
+    ]
+  },
+  "metric_notes": {
+    "long_short_spread": "research metric only, not a tradable signal",
+    "score_semantics": "raw_score; never a probability (P0-007)"
+  }
+}

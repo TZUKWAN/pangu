@@ -1,0 +1,226 @@
+{
+  "candidate": "rev5_top20",
+  "steps": {
+    "base_research_window": {
+      "total_return": 0.035217946345921014,
+      "sharpe": 0.199286043818582,
+      "profit_factor": 1.2337268837598625,
+      "max_drawdown": -0.5262311384382483,
+      "n_trades": 1697,
+      "win_rate": 0.44431349440188567
+    },
+    "param_neighborhood": {
+      "top16": {
+        "total_return": 0.013249083971079934,
+        "sharpe": 0.18613954446396985,
+        "profit_factor": 1.1353311558905996,
+        "max_drawdown": -0.5410983206655615,
+        "n_trades": 1690,
+        "win_rate": 0.4372781065088757
+      },
+      "top18": {
+        "total_return": 0.0266070121969606,
+        "sharpe": 0.19564662714461759,
+        "profit_factor": 1.188681696920955,
+        "max_drawdown": -0.5177842341526706,
+        "n_trades": 1691,
+        "win_rate": 0.4429331756357185
+      },
+      "top22": {
+        "total_return": 0.03180503533093093,
+        "sharpe": 0.18385657548459228,
+        "profit_factor": 1.2364150816960646,
+        "max_drawdown": -0.4803927010708917,
+        "n_trades": 1700,
+        "win_rate": 0.4441176470588235
+      },
+      "top24": {
+        "total_return": 0.027575758597490285,
+        "sharpe": 0.16905123940222808,
+        "profit_factor": 1.2115852385716959,
+        "max_drawdown": -0.4409164121518605,
+        "n_trades": 1704,
+        "win_rate": 0.4413145539906103
+      },
+      "rebal4": {
+        "total_return": 0.05548925274170102,
+        "sharpe": 0.2167344845535295,
+        "profit_factor": 1.0367883882054498,
+        "max_drawdown": -0.5991294918845211,
+        "n_trades": 2256,
+        "win_rate": 0.4242021276595745
+      },
+      "rebal6": {
+        "total_return": -0.04011494134056881,
+        "sharpe": 0.11620851489446991,
+        "profit_factor": 0.9248254235031121,
+        "max_drawdown": -0.6223976153667814,
+        "n_trades": 1412,
+        "win_rate": 0.4178470254957507
+      },
+      "fragile": false
+    },
+    "cost_stress": {
+      "2x": {
+        "total_return": 0.023342359417120262,
+        "sharpe": 0.18643224318459056,
+        "profit_factor": 1.1427436937195292,
+        "max_drawdown": -0.5133236457417593,
+        "n_trades": 1697,
+        "win_rate": 0.4307601649970536
+      },
+      "3x": {
+        "total_return": 0.010919830574880551,
+        "sharpe": 0.17429353449427262,
+        "profit_factor": 1.060634292372821,
+        "max_drawdown": -0.5036420201945424,
+        "n_trades": 1697,
+        "win_rate": 0.41249263406010606
+      },
+      "cost2x_positive": true
+    },
+    "multiple_testing": {
+      "n_registered_rule_trials": 12,
+      "deflated_sharpe": 0.6163822754071165,
+      "bootstrap_sharpe_ci_95": {
+        "lo": -0.062058555453405884,
+        "hi": 0.08355266964352598,
+        "point": 0.012553840754997351,
+        "n": 1000,
+        "block": 5
+      }
+    },
+    "pbo": {
+      "pbo": 0.1,
+      "n_combinations": 20
+    },
+    "multiple_hypothesis": {
+      "n_experiments": 12,
+      "n_with_p": 0,
+      "n_significant_raw": 0,
+      "n_significant_bh": 0,
+      "method": "benjamini-hochberg",
+      "experiments": [
+        {
+          "id": "strategy_mom20_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_mom60_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_rev5_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_lowvol20_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_voladj_mom20_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_amihud20_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_turnover20_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_vpr20_top20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_random20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_ew_benchmark_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_random20_wf",
+          "p": null,
+          "q_value_bh": null
+        },
+        {
+          "id": "strategy_ew_benchmark_wf",
+          "p": null,
+          "q_value_bh": null
+        }
+      ]
+    },
+    "subperiods": {
+      "note": "regime fn trivial; yearly split",
+      "result": {
+        "by_regime": {
+          "all": {
+            "total_return": 0.035217946345921014,
+            "sharpe": 0.199286043818582,
+            "max_drawdown": 0.3730685773746128,
+            "n_days": 839
+          }
+        },
+        "by_year": {
+          "1970": {
+            "total_return": 0.035217946345921014,
+            "sharpe": 0.199286043818582,
+            "max_drawdown": 0.3730685773746128,
+            "n_days": 839
+          }
+        }
+      }
+    },
+    "holdout": {
+      "window": [
+        "2026-06-01",
+        "2026-09-04"
+      ],
+      "trading_days": 69,
+      "rev5": {
+        "total_return": 0.024245880522230312,
+        "sharpe": 0.4758465881997959,
+        "profit_factor": 1.1064507991,
+        "max_drawdown": 0.13351051900129338,
+        "n_trades": 139,
+        "win_rate_trades": 0.4316546762589928,
+        "execution_rate": 0.9961538461538462
+      },
+      "random_control": {
+        "total_return": -0.03555948672981868,
+        "n_trades": 140
+      }
+    }
+  },
+  "decision": {
+    "approved_as_paper_candidate": false,
+    "checks": {
+      "oos_net_expectancy_gt_0": true,
+      "oos_profit_factor_gt_1": true,
+      "oos_profit_factor_ge_1_2": true,
+      "oos_sharpe_ge_1": false,
+      "mdd_le_15pct": false,
+      "trades_ge_200": true,
+      "trade_dates_ge_120": true,
+      "cost2x_positive": true,
+      "parameter_stable": true,
+      "leakage_audit_passed": false,
+      "holdout_positive": true,
+      "beats_random_on_holdout": true,
+      "dsr_positive": true
+    }
+  }
+}

@@ -335,15 +335,9 @@ def main() -> None:
     for name in names:
         try:
             if name == "random20":
-                strat_feats = dict(feats)
-                strat_feats["ret20"] = RandomStrategy(feats)._random.unstack(0) \
-                    if hasattr(RandomStrategy(feats)._random, "unstack") else None
-                # simpler: random scores per code as constant series
-                rng = np.random.default_rng(42)
-                codes = feats["ret20"].columns
-                rand = pd.DataFrame({c: rng.normal() for c in codes})
-                strat_feats["ret20"] = rand
-                run_one_custom("random20", strat_feats, data, registry, "seeded random ranking control")
+                run_random(feats, data, registry)
+            elif name == "ew_benchmark":
+                run_ew_benchmark(feats, data, registry)
             else:
                 run_one(name, feats, data, registry)
         except Exception as e:  # noqa: BLE001

@@ -1,0 +1,113 @@
+{
+  "name": "mkt_vol_20d",
+  "version": "1.0.0",
+  "family": "market",
+  "description": "市场20日等权日收益波动",
+  "economic_hypothesis": "市场波动刻画风险偏好环境：高波动期动量衰减、反转增强（状态依赖假说）。全截面同值，供 regime 研究。",
+  "status": "evaluated",
+  "factor": {
+    "name": "mkt_vol_20d",
+    "version": "1.0.0",
+    "family": "market",
+    "description": "市场20日等权日收益波动",
+    "economic_hypothesis": "市场波动刻画风险偏好环境：高波动期动量衰减、反转增强（状态依赖假说）。全截面同值，供 regime 研究。"
+  },
+  "start": "2022-01-04",
+  "end": "2025-12-31",
+  "quantiles": 5,
+  "horizons": {
+    "1": {
+      "ic_mean_pearson": null,
+      "ic_mean_spearman": null,
+      "icir": null,
+      "t_stat": null,
+      "n_days": 0,
+      "coverage_mean": null,
+      "quantile_returns": {},
+      "long_short_spread": null,
+      "monotonicity": null,
+      "ic_first_half": null,
+      "ic_second_half": null,
+      "ic_high_vol": null,
+      "ic_low_vol": null,
+      "note": "insufficient valid daily cross-sections"
+    },
+    "3": {
+      "ic_mean_pearson": null,
+      "ic_mean_spearman": null,
+      "icir": null,
+      "t_stat": null,
+      "n_days": 0,
+      "coverage_mean": null,
+      "quantile_returns": {},
+      "long_short_spread": null,
+      "monotonicity": null,
+      "ic_first_half": null,
+      "ic_second_half": null,
+      "ic_high_vol": null,
+      "ic_low_vol": null,
+      "note": "insufficient valid daily cross-sections"
+    },
+    "5": {
+      "ic_mean_pearson": null,
+      "ic_mean_spearman": null,
+      "icir": null,
+      "t_stat": null,
+      "n_days": 0,
+      "coverage_mean": null,
+      "quantile_returns": {},
+      "long_short_spread": null,
+      "monotonicity": null,
+      "ic_first_half": null,
+      "ic_second_half": null,
+      "ic_high_vol": null,
+      "ic_low_vol": null,
+      "note": "insufficient valid daily cross-sections"
+    },
+    "10": {
+      "ic_mean_pearson": null,
+      "ic_mean_spearman": null,
+      "icir": null,
+      "t_stat": null,
+      "n_days": 0,
+      "coverage_mean": null,
+      "quantile_returns": {},
+      "long_short_spread": null,
+      "monotonicity": null,
+      "ic_first_half": null,
+      "ic_second_half": null,
+      "ic_high_vol": null,
+      "ic_low_vol": null,
+      "note": "insufficient valid daily cross-sections"
+    },
+    "20": {
+      "ic_mean_pearson": null,
+      "ic_mean_spearman": null,
+      "icir": null,
+      "t_stat": null,
+      "n_days": 0,
+      "coverage_mean": null,
+      "quantile_returns": {},
+      "long_short_spread": null,
+      "monotonicity": null,
+      "ic_first_half": null,
+      "ic_second_half": null,
+      "ic_high_vol": null,
+      "ic_low_vol": null,
+      "note": "insufficient valid daily cross-sections"
+    }
+  },
+  "pit_checks": {
+    "max_feature_date": "2025-12-31",
+    "max_label_date": "2025-12-31",
+    "feature_used_only_past": true,
+    "research_window": [
+      "2022-01-04",
+      "2025-12-31"
+    ]
+  },
+  "metric_notes": {
+    "long_short_spread": "research metric only, not a tradable signal",
+    "score_semantics": "raw_score; never a probability (P0-007)"
+  }
+}

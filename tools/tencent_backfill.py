@@ -87,7 +87,13 @@ def codes_needing_repair(conn: sqlite3.Connection) -> list[str]:
 
 
 def merge(conn: sqlite3.Connection) -> int:
-    """Fill breadth_raw gaps from tencent tables (baostock rows win)."""
+    """Fill breadth_raw gaps from tencent tables.
+
+    修复版：不跳过整个代码，而是逐日期判定——任何 tencent 有而 breadth_raw
+    没有的日期都补入（source='tencent'）。baostock 已有行保持不变（baostock
+    胜出），插值链基于 tencent hfq 序列自身（连续、含除权），与 baostock 行
+    是否相邻无关。
+    """
     added = 0
     codes = [r[0] for r in conn.execute("SELECT DISTINCT code FROM tencent_hfq")]
     for i, code in enumerate(codes):
@@ -96,31 +102,25 @@ def merge(conn: sqlite3.Connection) -> int:
                               WHERE code=? ORDER BY date""", (code,)).fetchall()
         if not raw or len(hfq) < 2:
             continue
-        have_bs = {r[0] for r in conn.execute(
-            "SELECT date FROM breadth_raw WHERE code=? AND source IS NULL OR source='baostock'",
-            (code,))} if True else set()
-        # baostock coverage = rows already present (source baostock/default)
-        have_bs = {r[0] for r in conn.execute(
-            "SELECT date FROM breadth_raw WHERE code=? AND (source IS NULL OR source='baostock')", (code,))}
-        prev_hfq = None
-        prev_raw = None
-        prev_factor = None
+        have_any = {r[0] for r in conn.execute(
+            "SELECT date FROM breadth_raw WHERE code=?", (code,))}
+        prev_hfq = prev_raw = prev_factor = None
         rows = []
         for (d, o, h, l, c, v) in raw:
             factor = hfq.get(d)
-            if factor is None or c in (None, 0):
+            if factor is None or not c:
                 prev_hfq = prev_raw = prev_factor = None
                 continue
             factor = factor / c
-            if d in have_bs:
+            if prev_hfq is None or not prev_raw:
                 prev_hfq, prev_raw, prev_factor = hfq[d], c, factor
                 continue
-            if prev_hfq is None or prev_raw is None or prev_factor is None:
+            if d in have_any:
                 prev_hfq, prev_raw, prev_factor = hfq[d], c, factor
                 continue
             pct = (hfq[d] / prev_hfq - 1.0) * 100.0
             preclose = prev_raw * (factor / prev_factor)
-            amount = v * c  # documented approximation
+            amount = v * c  # 近似：成交额≈volume×close（已文档化）
             rows.append((d, code, o, h, l, c, round(preclose, 4), v, amount,
                          round(pct, 4), None, 0, "tencent"))
             prev_hfq, prev_raw, prev_factor = hfq[d], c, factor
