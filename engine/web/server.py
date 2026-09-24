@@ -218,7 +218,7 @@ def _build_pipeline(cfg: dict[str, Any]) -> Pipeline:
     PipelineFactory.from_config(cfg, mode="web")，禁止再内联拼装 Pipeline，
     防止各入口配置注入漂移（有 test_pipeline_entrypoint_consistency.py 锁住）。
     """
-    from .pipeline_factory import PipelineFactory
+    from ..pipeline_factory import PipelineFactory
     return PipelineFactory.from_config(cfg, mode="web")
 
 
