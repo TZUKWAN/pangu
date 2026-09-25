@@ -1,12 +1,10 @@
-"""[DEPRECATED since Pangu 3.0] 独立 LLM Agent 循环。
+"""盘古独立 Agent 核心：工具调用循环。
 
-Pangu 3.0 起产品形态改为"研究与下一交易日决策中间层"，由宿主 Agent
-（Claude Code / Codex / OpenCode / Kimi / ZCode）通过 MCP 调用
-`engine.decision.service.recommend_next_session()`。
-本模块仅保留兼容用途：默认启动不加载、README 不再推荐、不作为产品入口。
+[DEPRECATED since Pangu 3.0] 产品形态改为"研究与下一交易日决策中间层"，
+由宿主 Agent（Claude Code / Codex / OpenCode / Kimi / ZCode）通过 MCP 调用
+`engine.decision.service.recommend_next_session()`。本模块仅保留兼容用途：
+默认启动不加载、README 不再推荐、不作为产品入口。
 """
-
-"""盘古独立 Agent 核心：工具调用循环。"""
 
 from __future__ import annotations
 

@@ -1137,8 +1137,7 @@ async function loadDecisionStatus(){
     Object.entries(d.sources||{}).forEach(([k,v])=>lines.push(`  ${k}: fetched=${v.fetched_at} age=${v.age_seconds}s stale=${v.stale} quality=${v.quality}`));
     lines.push(`PIT 档案最新日：${(d.pit_archive||{}).max_date}`);
     lines.push(`MCP：${(d.mcp||{}).transport}`);
-    out.textContent=lines.join('
-');
+    out.textContent=lines.join('\n');
   }catch(e){out.textContent='状态获取失败: '+esc(e.message)}
 }
 function modeBadgeClass(mode){return {PAPER:'mode-PAPER',SHADOW:'mode-SHADOW',LIVE:'mode-LIVE',MANUAL_CONFIRM:'mode-MANUAL_CONFIRM'}[mode]||''}

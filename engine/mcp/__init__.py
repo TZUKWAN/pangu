@@ -1,0 +1,1 @@
+"""Pangu MCP server。"""
