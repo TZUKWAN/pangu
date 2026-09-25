@@ -1,0 +1,265 @@
+[
+ {
+  "strategy_id": "uat_manual_paper",
+  "version": "1.0",
+  "code_sha": "uat",
+  "data_snapshot": "uat",
+  "features": [],
+  "model": "manual_paper_orders",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "manual"
+  },
+  "metrics": {},
+  "approval_state": "paper",
+  "created_at": "2026-09-20T03:09:21+08:00",
+  "updated_at": "2026-09-20T03:09:21+08:00",
+  "evidence_refs": [],
+  "notes": "UAT 人工纸面下单专用；仅 PAPER 模式"
+ },
+ {
+  "strategy_id": "事件驱动",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {
+   "avg_net_return": -0.0067,
+   "caveat": "research_only_below_promotion_gates",
+   "max_drawdown": 0.4888,
+   "profit_factor": 0.777,
+   "research_only": true,
+   "source": "data/research/replay_backtest_allpools_final.json",
+   "success_rate": 0.3684,
+   "trades": 38,
+   "window": "20260410-20260720"
+  },
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json",
+   "replay_backtest_20260410_20260901_w1_00.json",
+   "replay_backtest_20260410_20260901_w1_01.json",
+   "replay_backtest_20260410_20260901_w3_00.json",
+   "replay_backtest_20260410_20260901_w3_01.json",
+   "replay_backtest_20260721_20260724.json",
+   "replay_backtest_20260801_20260904_acceptance.json",
+   "replay_backtest_allpools_final.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘；已有研究性回测（PF 0.777）远低于晋级门槛，仅供参考"
+ },
+ {
+  "strategy_id": "大市值低波",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {},
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json",
+   "replay_backtest_20260410_20260901_w1_00.json",
+   "replay_backtest_20260410_20260901_w1_01.json",
+   "replay_backtest_20260410_20260901_w3_00.json",
+   "replay_backtest_20260410_20260901_w3_01.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘"
+ },
+ {
+  "strategy_id": "小盘优质",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {},
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘"
+ },
+ {
+  "strategy_id": "超跌反弹",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {},
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json",
+   "replay_backtest_20260410_20260901_w1_00.json",
+   "replay_backtest_20260410_20260901_w1_01.json",
+   "replay_backtest_20260410_20260901_w3_00.json",
+   "replay_backtest_20260410_20260901_w3_01.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘"
+ },
+ {
+  "strategy_id": "趋势回踩",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {},
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘"
+ },
+ {
+  "strategy_id": "连板梯队",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {},
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘"
+ },
+ {
+  "strategy_id": "题材龙头",
+  "version": "1.0",
+  "code_sha": "75d175f3ccf28d21bb10ba3a700f1164a0d8e93156c6612d97e2e1af0a07bc59",
+  "data_snapshot": "replay_20260410_20260901",
+  "features": [
+   "heuristic_pool_score"
+  ],
+  "model": "manual_rules_v1",
+  "params": {},
+  "train_range": null,
+  "validation_range": null,
+  "test_range": null,
+  "execution_assumptions": {
+   "decision_time": "15:05",
+   "entry": "T+1 open zone"
+  },
+  "metrics": {},
+  "approval_state": "research",
+  "created_at": "2026-09-19T00:00:00+08:00",
+  "updated_at": "2026-09-20T03:08:11+08:00",
+  "evidence_refs": [
+   "replay_backtest_20260410_20260720.json",
+   "replay_backtest_20260727_20260904.json",
+   "replay_backtest_20260410_20260901_w0_00.json",
+   "replay_backtest_20260410_20260901_w0_01.json",
+   "replay_backtest_20260410_20260901_w2_00.json",
+   "replay_backtest_20260410_20260901_w2_01.json"
+  ],
+  "notes": "人工评分池，未通过独立样本外验证，禁止实盘"
+ }
+]

@@ -1,0 +1,20 @@
+{
+ "temperature": 49.0,
+ "posture": "正常",
+ "advice": "情绪温和，有结构性机会。按趋势选股，严格执行止损。",
+ "date": "20260720",
+ "components": {
+  "limit_up_count": 57,
+  "limit_up_score": 64.9,
+  "consecutive_height": 3,
+  "consecutive_score": 25.0,
+  "broke_rate": 0.0,
+  "broke_rate_score": 100.0,
+  "limit_down_count": 310,
+  "limit_down_score": 0.0,
+  "advance": 1708,
+  "decline": 3415,
+  "advance_decline_score": 33.3
+ },
+ "warnings": []
+}

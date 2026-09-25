@@ -1,0 +1,37 @@
+{
+ "超跌反弹": [
+  {
+   "strategy": "超跌反弹",
+   "code": "301217",
+   "name": "铜冠铜箔",
+   "board": "创业板",
+   "trigger_reason": "20 日跌幅 -39.9%，缩量企稳",
+   "score": 64.87,
+   "raw_features": {
+    "return_20d": -39.91,
+    "volume_shrink": true,
+    "hammer": false
+   },
+   "warnings": [],
+   "allow_when_phase_forbids": false
+  }
+ ],
+ "大市值低波": [],
+ "事件驱动": [
+  {
+   "strategy": "事件驱动",
+   "code": "600406",
+   "name": "国电南瑞",
+   "board": "沪市主板",
+   "trigger_reason": "公告事件: 国电南瑞关于董事长提议回购公司部分股份的",
+   "score": 72,
+   "raw_features": {
+    "source": "announcement",
+    "event_type": "positive",
+    "event_title": "国电南瑞关于董事长提议回购公司部分股份的提示性公告"
+   },
+   "warnings": [],
+   "allow_when_phase_forbids": false
+  }
+ ]
+}

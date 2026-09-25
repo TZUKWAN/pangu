@@ -1,0 +1,273 @@
+{
+ "all_spot": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "rows": 5196,
+  "source": "replay_archive",
+  "source_quality": {
+   "status": "ok",
+   "source": "replay_archive"
+  },
+  "source_chain": [
+   {
+    "source": "replay_archive",
+    "ok": true,
+    "status": "ok",
+    "row_count": 5196
+   }
+  ],
+  "field_quality": {},
+  "warnings": []
+ },
+ "rps": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "mode": "real",
+  "count": 5192
+ },
+ "sentiment": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "posture": "正常",
+  "temperature": 49.04648399375366
+ },
+ "news": {
+  "status": "degraded",
+  "flashes": 0,
+  "stock_count": 0,
+  "available_sources": [],
+  "sources": {
+   "archive": {
+    "ok": false,
+    "status": "unavailable",
+    "mode": "exact_date_required",
+    "date": "20260720",
+    "error": "缺少 20260720 精确日期新闻归档，禁止用当前新闻替代历史证据"
+   }
+  },
+  "warnings": [
+   "缺少 20260720 精确日期新闻归档，禁止用当前新闻替代历史证据"
+  ]
+ },
+ "news_discovery": {
+  "status": "degraded",
+  "date": "20260720",
+  "reason": "新闻机会发现阶段超时或失败"
+ },
+ "strategy_framework": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "phase": "冰点期",
+  "pools": [
+   "超跌反弹",
+   "大市值低波",
+   "事件驱动"
+  ]
+ },
+ "trend_scan": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "candidates": 186
+ },
+ "quant_guard": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "kept_count": 188,
+  "watch_count": 0,
+  "rejected_count": 0
+ },
+ "entry_exit": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "computed": 188
+ },
+ "volume_audit": {
+  "status": "ok",
+  "date": "20260720",
+  "reason": "",
+  "computed": 188
+ },
+ "structured_data": {
+  "dragon_tiger_daily": {
+   "status": "removed",
+   "target_count": 0,
+   "success_count": 0,
+   "skipped_count": 0,
+   "item_count": 0,
+   "coverage_pct": null,
+   "warnings": [
+    "THS dragon tiger API returned no data. removed_per_policy: 东方财富数据源已全部移除，该因子无免费替代源"
+   ]
+  },
+  "hot_rank": {
+   "status": "ok",
+   "target_count": 0,
+   "success_count": 1,
+   "skipped_count": 0,
+   "item_count": 100,
+   "coverage_pct": null,
+   "warnings": []
+  },
+  "limit_up_sentiment": {
+   "status": "empty",
+   "target_count": 0,
+   "success_count": 1,
+   "skipped_count": 0,
+   "item_count": 0,
+   "coverage_pct": null,
+   "warnings": []
+  },
+  "capital_flow_120d": {
+   "status": "empty",
+   "target_count": 100,
+   "success_count": 0,
+   "skipped_count": 0,
+   "item_count": 0,
+   "coverage_pct": 0.0,
+   "warnings": []
+  },
+  "margin": {
+   "status": "degraded",
+   "target_count": 100,
+   "success_count": 0,
+   "skipped_count": 1,
+   "item_count": 0,
+   "coverage_pct": 0.0,
+   "warnings": [
+    "disabled by structured_data config"
+   ]
+  },
+  "lockup": {
+   "status": "empty",
+   "target_count": 100,
+   "success_count": 0,
+   "skipped_count": 0,
+   "item_count": 0,
+   "coverage_pct": 0.0,
+   "warnings": []
+  },
+  "research": {
+   "status": "degraded",
+   "target_count": 50,
+   "success_count": 0,
+   "skipped_count": 0,
+   "item_count": 0,
+   "coverage_pct": 0.0,
+   "warnings": [
+    "limited to top 50 candidates; 50 candidates omitted for runtime control"
+   ]
+  },
+  "announcements": {
+   "status": "degraded",
+   "target_count": 100,
+   "success_count": 24,
+   "skipped_count": 0,
+   "item_count": 24,
+   "coverage_pct": 24.0,
+   "warnings": [
+    "600535: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "002603: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "600066: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "688617: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "002311: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "300498: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "001872: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+    "003010: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query"
+   ]
+  },
+  "irm": {
+   "status": "degraded",
+   "target_count": 0,
+   "success_count": 0,
+   "skipped_count": 1,
+   "item_count": 0,
+   "coverage_pct": null,
+   "warnings": [
+    "disabled by structured_data config"
+   ]
+  },
+  "northbound": {
+   "status": "degraded",
+   "target_count": 50,
+   "success_count": 50,
+   "skipped_count": 0,
+   "item_count": 50,
+   "coverage_pct": 100.0,
+   "warnings": [
+    "limited to top 50 candidates; 50 candidates omitted for runtime control"
+   ]
+  },
+  "block_trade": {
+   "status": "degraded",
+   "target_count": 0,
+   "success_count": 0,
+   "skipped_count": 1,
+   "item_count": 0,
+   "coverage_pct": null,
+   "warnings": [
+    "disabled by structured_data config"
+   ]
+  },
+  "holder_num": {
+   "status": "degraded",
+   "target_count": 0,
+   "success_count": 0,
+   "skipped_count": 1,
+   "item_count": 0,
+   "coverage_pct": null,
+   "warnings": [
+    "disabled by structured_data config"
+   ]
+  },
+  "dividend": {
+   "status": "degraded",
+   "target_count": 50,
+   "success_count": 0,
+   "skipped_count": 0,
+   "item_count": 0,
+   "coverage_pct": 0.0,
+   "warnings": [
+    "limited to top 50 candidates; 50 candidates omitted for runtime control"
+   ]
+  },
+  "summary": {
+   "status": "ok",
+   "candidate_count": 100,
+   "deep_max_candidates": 100,
+   "total_budget_seconds": 180.0,
+   "remaining_budget_seconds": 173.67,
+   "note": "All Eastmoney sources removed per policy. Only non-EM public endpoints used."
+  }
+ },
+ "llm": {
+  "status": "degraded",
+  "mode": "rule",
+  "warnings": [
+   "未调用真实 LLM，使用规则验证"
+  ]
+ },
+ "fund_flow": {
+  "status": "failed",
+  "source": "replay_archive",
+  "rows": 0,
+  "warnings": [
+   "回放模式无资金流数据"
+  ],
+  "field_quality": {},
+  "source_quality": {
+   "status": "failed",
+   "source": "replay_archive",
+   "warnings": [
+    "回放模式无资金流数据"
+   ]
+  },
+  "source_chain": []
+ }
+}

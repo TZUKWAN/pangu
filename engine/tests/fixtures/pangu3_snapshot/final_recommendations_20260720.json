@@ -1,0 +1,1659 @@
+[
+ {
+  "code": "301217",
+  "name": "铜冠铜箔",
+  "board": "创业板",
+  "close": 103.24,
+  "pct_change": -20.0,
+  "turnover_rate": 3.0213,
+  "circ_mv_yi": 0.0,
+  "rps": 2.657935285053929,
+  "rps_mode": "real",
+  "fund_inflow_days": 0,
+  "fund_flow_status": "unavailable",
+  "fund_flow_date": null,
+  "fund_flow_net": null,
+  "reasons": [],
+  "score": 64.87,
+  "risk_flags": [],
+  "is_watchlist": false,
+  "entry_exit": {
+   "code": "301217",
+   "name": "铜冠铜箔",
+   "close": 103.24,
+   "buy_points": [
+    {
+     "price": 189.0,
+     "type": "突破位",
+     "condition": "收盘站稳前 20 日高点 189.00",
+     "is_primary": false,
+     "style": "breakout_confirm"
+    },
+    {
+     "price": 103.24,
+     "type": "支撑位",
+     "condition": "回踩近 10 日低点 103.24 低吸",
+     "is_primary": true,
+     "style": "support_dip"
+    }
+   ],
+   "stop_loss": {
+    "price": 73.57,
+    "method": "ATR止损(2.0×ATR=14.84)"
+   },
+   "take_profit": [
+    {
+     "price": 162.58,
+     "method": "盈亏比2:1"
+    },
+    {
+     "price": 192.25,
+     "method": "盈亏比3:1"
+    }
+   ],
+   "trailing_stop": {
+    "price": 129.14,
+    "method": "MA10跟踪止盈"
+   },
+   "exit_plan": {
+    "entry_price": 103.24,
+    "initial_stop": 73.57,
+    "first_target": 162.58,
+    "final_target": 192.25,
+    "trailing_reference": 129.14,
+    "max_holding_days": 3,
+    "sentiment_exit_drop": 15.0,
+    "conservative_same_day_order": "stop_first",
+    "rules": [
+     {
+      "rule_type": "hard_stop",
+      "action": "exit_all",
+      "condition": "开盘或盘中触及硬止损 73.57",
+      "trigger_price": 73.57,
+      "priority": 10
+     },
+     {
+      "rule_type": "news_invalidation",
+      "action": "exit_all",
+      "condition": "出现立案、减持、业绩变脸、合同终止等直接负面事件",
+      "trigger_price": null,
+      "priority": 15
+     },
+     {
+      "rule_type": "market_retreat",
+      "action": "exit_all",
+      "condition": "市场进入冰点/退潮，或情绪温度较入场下降≥15点",
+      "trigger_price": null,
+      "priority": 20
+     },
+     {
+      "rule_type": "theme_invalidation",
+      "action": "exit_all",
+      "condition": "题材催化被证伪、核心龙头转弱或板块退出强势序列",
+      "trigger_price": null,
+      "priority": 25
+     },
+     {
+      "rule_type": "trend_break",
+      "action": "exit_all",
+      "condition": "收盘跌破MA10且放量，或有效跌破MA20",
+      "trigger_price": null,
+      "priority": 30
+     },
+     {
+      "rule_type": "first_target",
+      "action": "reduce_half",
+      "condition": "触及第一目标 162.58，减半并把止损抬到成本",
+      "trigger_price": 162.58,
+      "priority": 40
+     },
+     {
+      "rule_type": "final_target",
+      "action": "exit_all",
+      "condition": "触及最终目标 192.25",
+      "trigger_price": 192.25,
+      "priority": 45
+     },
+     {
+      "rule_type": "trailing_stop",
+      "action": "exit_all",
+      "condition": "盈利后收盘跌破跟踪参考 129.14",
+      "trigger_price": 129.14,
+      "priority": 50
+     },
+     {
+      "rule_type": "time_stop",
+      "action": "exit_all",
+      "condition": "持有满 3 个交易日仍未兑现，收盘退出",
+      "trigger_price": null,
+      "priority": 60
+     }
+    ]
+   },
+   "position": {
+    "shares": 100,
+    "risk_pct": 0.3,
+    "emotion_factor": 0.36,
+    "account_size": 1000000.0,
+    "base_risk_pct": 1.0
+   },
+   "risk_reward_ratio": 2.0,
+   "warnings": [],
+   "entry_style": "support_dip",
+   "entry_plan": {
+    "entry_style": "support_dip",
+    "trigger_price": 103.24,
+    "trigger_condition": "回踩近 10 日低点 103.24 低吸",
+    "ideal_entry_zone": [
+     99.11,
+     107.37
+    ],
+    "current_price": 103.24,
+    "is_chasing": false,
+    "invalid_condition": "跌破支撑位 2% 且不能快速收回"
+   }
+  },
+  "entry_plan": {
+   "entry_style": "support_dip",
+   "trigger_price": 103.24,
+   "trigger_condition": "回踩近 10 日低点 103.24 低吸",
+   "ideal_entry_zone": [
+    99.11,
+    107.37
+   ],
+   "current_price": 103.24,
+   "is_chasing": false,
+   "invalid_condition": "跌破支撑位 2% 且不能快速收回"
+  },
+  "exit_plan": {
+   "entry_price": 103.24,
+   "initial_stop": 73.57,
+   "first_target": 162.58,
+   "final_target": 192.25,
+   "trailing_reference": 129.14,
+   "max_holding_days": 3,
+   "sentiment_exit_drop": 15.0,
+   "conservative_same_day_order": "stop_first",
+   "rules": [
+    {
+     "rule_type": "hard_stop",
+     "action": "exit_all",
+     "condition": "开盘或盘中触及硬止损 73.57",
+     "trigger_price": 73.57,
+     "priority": 10
+    },
+    {
+     "rule_type": "news_invalidation",
+     "action": "exit_all",
+     "condition": "出现立案、减持、业绩变脸、合同终止等直接负面事件",
+     "trigger_price": null,
+     "priority": 15
+    },
+    {
+     "rule_type": "market_retreat",
+     "action": "exit_all",
+     "condition": "市场进入冰点/退潮，或情绪温度较入场下降≥15点",
+     "trigger_price": null,
+     "priority": 20
+    },
+    {
+     "rule_type": "theme_invalidation",
+     "action": "exit_all",
+     "condition": "题材催化被证伪、核心龙头转弱或板块退出强势序列",
+     "trigger_price": null,
+     "priority": 25
+    },
+    {
+     "rule_type": "trend_break",
+     "action": "exit_all",
+     "condition": "收盘跌破MA10且放量，或有效跌破MA20",
+     "trigger_price": null,
+     "priority": 30
+    },
+    {
+     "rule_type": "first_target",
+     "action": "reduce_half",
+     "condition": "触及第一目标 162.58，减半并把止损抬到成本",
+     "trigger_price": 162.58,
+     "priority": 40
+    },
+    {
+     "rule_type": "final_target",
+     "action": "exit_all",
+     "condition": "触及最终目标 192.25",
+     "trigger_price": 192.25,
+     "priority": 45
+    },
+    {
+     "rule_type": "trailing_stop",
+     "action": "exit_all",
+     "condition": "盈利后收盘跌破跟踪参考 129.14",
+     "trigger_price": 129.14,
+     "priority": 50
+    },
+    {
+     "rule_type": "time_stop",
+     "action": "exit_all",
+     "condition": "持有满 3 个交易日仍未兑现，收盘退出",
+     "trigger_price": null,
+     "priority": 60
+    }
+   ]
+  },
+  "technical": {
+   "ma": {
+    "ma5": 124.22,
+    "ma10": 129.14,
+    "ma30": 150.19,
+    "ma60": 118.87,
+    "ma120": 79.04
+   },
+   "macd": {
+    "dif": -5.0621,
+    "dea": 1.2564,
+    "hist": -12.637,
+    "golden_cross": false,
+    "hint": "MACD未现金叉或已过金叉点"
+   },
+   "volume": {
+    "latest": 25046897.0,
+    "avg5": 37571088.8,
+    "volume_ratio": 0.67,
+    "hint": "缩量或量能不足"
+   },
+   "trend_windows": {
+    "week_1": {
+     "days": 5,
+     "return_pct": -13.79,
+     "pullback_from_high_pct": -25.17,
+     "rebound_from_low_pct": 0.0,
+     "state": "走弱修复"
+    },
+    "week_2": {
+     "days": 10,
+     "return_pct": -28.39,
+     "pullback_from_high_pct": -30.82,
+     "rebound_from_low_pct": 0.0,
+     "state": "走弱修复"
+    },
+    "month_1": {
+     "days": 20,
+     "return_pct": -47.46,
+     "pullback_from_high_pct": -45.38,
+     "rebound_from_low_pct": 0.0,
+     "state": "走弱修复"
+    }
+   },
+   "kline": [
+    {
+     "date": "20260422",
+     "open": 48.61,
+     "high": 52.3,
+     "low": 48.6,
+     "close": 51.49,
+     "volume": 51070650.0
+    },
+    {
+     "date": "20260423",
+     "open": 51.1,
+     "high": 51.8,
+     "low": 47.9,
+     "close": 48.28,
+     "volume": 40104411.0
+    },
+    {
+     "date": "20260424",
+     "open": 47.5,
+     "high": 48.41,
+     "low": 46.5,
+     "close": 47.0,
+     "volume": 26328406.0
+    },
+    {
+     "date": "20260427",
+     "open": 47.83,
+     "high": 53.5,
+     "low": 47.56,
+     "close": 51.31,
+     "volume": 49444110.0
+    },
+    {
+     "date": "20260428",
+     "open": 53.99,
+     "high": 61.57,
+     "low": 52.34,
+     "close": 59.15,
+     "volume": 67045657.0
+    },
+    {
+     "date": "20260429",
+     "open": 57.97,
+     "high": 70.98,
+     "low": 57.89,
+     "close": 70.98,
+     "volume": 77959778.0
+    },
+    {
+     "date": "20260430",
+     "open": 72.32,
+     "high": 82.49,
+     "low": 70.0,
+     "close": 78.34,
+     "volume": 76374368.0
+    },
+    {
+     "date": "20260506",
+     "open": 78.55,
+     "high": 92.5,
+     "low": 75.3,
+     "close": 88.55,
+     "volume": 70563119.0
+    },
+    {
+     "date": "20260507",
+     "open": 85.0,
+     "high": 89.71,
+     "low": 82.44,
+     "close": 86.8,
+     "volume": 55448159.0
+    },
+    {
+     "date": "20260508",
+     "open": 85.48,
+     "high": 90.8,
+     "low": 85.0,
+     "close": 88.54,
+     "volume": 45027911.0
+    },
+    {
+     "date": "20260511",
+     "open": 87.6,
+     "high": 88.93,
+     "low": 85.0,
+     "close": 87.1,
+     "volume": 46197110.0
+    },
+    {
+     "date": "20260512",
+     "open": 87.1,
+     "high": 96.0,
+     "low": 84.08,
+     "close": 94.51,
+     "volume": 61797082.0
+    },
+    {
+     "date": "20260513",
+     "open": 90.0,
+     "high": 103.96,
+     "low": 88.5,
+     "close": 99.01,
+     "volume": 55506715.0
+    },
+    {
+     "date": "20260514",
+     "open": 95.0,
+     "high": 96.0,
+     "low": 84.18,
+     "close": 85.88,
+     "volume": 51277111.0
+    },
+    {
+     "date": "20260515",
+     "open": 84.66,
+     "high": 88.89,
+     "low": 80.1,
+     "close": 83.2,
+     "volume": 39027197.0
+    },
+    {
+     "date": "20260518",
+     "open": 83.14,
+     "high": 88.78,
+     "low": 80.5,
+     "close": 87.11,
+     "volume": 33332734.0
+    },
+    {
+     "date": "20260519",
+     "open": 86.7,
+     "high": 90.98,
+     "low": 85.02,
+     "close": 87.53,
+     "volume": 27896796.0
+    },
+    {
+     "date": "20260520",
+     "open": 87.11,
+     "high": 89.88,
+     "low": 84.47,
+     "close": 87.99,
+     "volume": 28788312.0
+    },
+    {
+     "date": "20260521",
+     "open": 89.99,
+     "high": 91.5,
+     "low": 82.8,
+     "close": 82.93,
+     "volume": 32504912.0
+    },
+    {
+     "date": "20260522",
+     "open": 83.13,
+     "high": 94.5,
+     "low": 83.13,
+     "close": 90.93,
+     "volume": 38450400.0
+    },
+    {
+     "date": "20260525",
+     "open": 95.0,
+     "high": 99.01,
+     "low": 89.1,
+     "close": 95.68,
+     "volume": 38449847.0
+    },
+    {
+     "date": "20260526",
+     "open": 92.0,
+     "high": 103.0,
+     "low": 91.15,
+     "close": 102.45,
+     "volume": 40654038.0
+    },
+    {
+     "date": "20260527",
+     "open": 100.0,
+     "high": 106.6,
+     "low": 95.0,
+     "close": 101.92,
+     "volume": 36632466.0
+    },
+    {
+     "date": "20260528",
+     "open": 102.47,
+     "high": 122.3,
+     "low": 100.0,
+     "close": 119.08,
+     "volume": 53668183.0
+    },
+    {
+     "date": "20260529",
+     "open": 111.2,
+     "high": 125.88,
+     "low": 109.67,
+     "close": 114.0,
+     "volume": 53413293.0
+    },
+    {
+     "date": "20260601",
+     "open": 110.54,
+     "high": 115.25,
+     "low": 96.92,
+     "close": 104.89,
+     "volume": 37082903.0
+    },
+    {
+     "date": "20260602",
+     "open": 105.0,
+     "high": 106.0,
+     "low": 97.4,
+     "close": 103.63,
+     "volume": 32147511.0
+    },
+    {
+     "date": "20260603",
+     "open": 102.66,
+     "high": 112.4,
+     "low": 100.43,
+     "close": 107.4,
+     "volume": 35664015.0
+    },
+    {
+     "date": "20260604",
+     "open": 103.69,
+     "high": 109.79,
+     "low": 103.6,
+     "close": 109.75,
+     "volume": 28772549.0
+    },
+    {
+     "date": "20260605",
+     "open": 107.01,
+     "high": 116.66,
+     "low": 107.0,
+     "close": 111.26,
+     "volume": 31096824.0
+    },
+    {
+     "date": "20260608",
+     "open": 102.41,
+     "high": 113.1,
+     "low": 102.38,
+     "close": 113.1,
+     "volume": 27907288.0
+    },
+    {
+     "date": "20260609",
+     "open": 117.8,
+     "high": 124.1,
+     "low": 114.23,
+     "close": 122.76,
+     "volume": 36377636.0
+    },
+    {
+     "date": "20260610",
+     "open": 120.0,
+     "high": 131.45,
+     "low": 118.09,
+     "close": 122.8,
+     "volume": 33014581.0
+    },
+    {
+     "date": "20260611",
+     "open": 121.0,
+     "high": 129.5,
+     "low": 116.18,
+     "close": 127.98,
+     "volume": 32387441.0
+    },
+    {
+     "date": "20260612",
+     "open": 134.94,
+     "high": 148.0,
+     "low": 133.1,
+     "close": 141.8,
+     "volume": 46106164.0
+    },
+    {
+     "date": "20260615",
+     "open": 149.0,
+     "high": 170.16,
+     "low": 147.0,
+     "close": 170.16,
+     "volume": 41289763.0
+    },
+    {
+     "date": "20260616",
+     "open": 182.1,
+     "high": 198.8,
+     "low": 172.05,
+     "close": 178.17,
+     "volume": 56880590.0
+    },
+    {
+     "date": "20260617",
+     "open": 178.19,
+     "high": 192.58,
+     "low": 177.0,
+     "close": 181.69,
+     "volume": 51661943.0
+    },
+    {
+     "date": "20260618",
+     "open": 179.3,
+     "high": 202.15,
+     "low": 178.01,
+     "close": 200.0,
+     "volume": 43634462.0
+    },
+    {
+     "date": "20260622",
+     "open": 195.55,
+     "high": 200.6,
+     "low": 179.0,
+     "close": 196.5,
+     "volume": 61296859.0
+    },
+    {
+     "date": "20260623",
+     "open": 188.69,
+     "high": 189.0,
+     "low": 171.1,
+     "close": 171.81,
+     "volume": 47402934.0
+    },
+    {
+     "date": "20260624",
+     "open": 174.9,
+     "high": 188.98,
+     "low": 174.9,
+     "close": 186.69,
+     "volume": 46873739.0
+    },
+    {
+     "date": "20260625",
+     "open": 180.98,
+     "high": 187.58,
+     "low": 176.0,
+     "close": 183.27,
+     "volume": 50575943.0
+    },
+    {
+     "date": "20260626",
+     "open": 175.0,
+     "high": 176.0,
+     "low": 160.96,
+     "close": 170.3,
+     "volume": 57412732.0
+    },
+    {
+     "date": "20260629",
+     "open": 166.51,
+     "high": 172.83,
+     "low": 152.8,
+     "close": 160.68,
+     "volume": 44271157.0
+    },
+    {
+     "date": "20260630",
+     "open": 159.5,
+     "high": 169.1,
+     "low": 157.0,
+     "close": 165.07,
+     "volume": 38122393.0
+    },
+    {
+     "date": "20260701",
+     "open": 166.0,
+     "high": 174.31,
+     "low": 162.0,
+     "close": 164.84,
+     "volume": 44709394.0
+    },
+    {
+     "date": "20260702",
+     "open": 154.0,
+     "high": 164.93,
+     "low": 147.0,
+     "close": 157.92,
+     "volume": 32876544.0
+    },
+    {
+     "date": "20260703",
+     "open": 156.1,
+     "high": 164.56,
+     "low": 150.0,
+     "close": 154.63,
+     "volume": 42513640.0
+    },
+    {
+     "date": "20260706",
+     "open": 159.98,
+     "high": 167.67,
+     "low": 143.0,
+     "close": 144.17,
+     "volume": 41769873.0
+    },
+    {
+     "date": "20260707",
+     "open": 144.8,
+     "high": 149.23,
+     "low": 140.61,
+     "close": 144.82,
+     "volume": 30699502.0
+    },
+    {
+     "date": "20260708",
+     "open": 145.59,
+     "high": 147.5,
+     "low": 133.7,
+     "close": 134.0,
+     "volume": 36626779.0
+    },
+    {
+     "date": "20260709",
+     "open": 138.88,
+     "high": 140.0,
+     "low": 130.4,
+     "close": 139.68,
+     "volume": 35779096.0
+    },
+    {
+     "date": "20260710",
+     "open": 139.88,
+     "high": 146.15,
+     "low": 132.01,
+     "close": 132.09,
+     "volume": 35791188.0
+    },
+    {
+     "date": "20260713",
+     "open": 132.07,
+     "high": 133.5,
+     "low": 119.2,
+     "close": 119.75,
+     "volume": 34030143.0
+    },
+    {
+     "date": "20260714",
+     "open": 121.91,
+     "high": 135.15,
+     "low": 120.0,
+     "close": 134.21,
+     "volume": 39428319.0
+    },
+    {
+     "date": "20260715",
+     "open": 136.89,
+     "high": 137.96,
+     "low": 126.19,
+     "close": 127.4,
+     "volume": 30265796.0
+    },
+    {
+     "date": "20260716",
+     "open": 125.11,
+     "high": 133.6,
+     "low": 120.3,
+     "close": 127.21,
+     "volume": 32974601.0
+    },
+    {
+     "date": "20260717",
+     "open": 125.06,
+     "high": 132.36,
+     "low": 120.88,
+     "close": 129.05,
+     "volume": 51156585.0
+    },
+    {
+     "date": "20260720",
+     "open": 112.63,
+     "high": 119.0,
+     "low": 103.24,
+     "close": 103.24,
+     "volume": 25046897.0
+    }
+   ],
+   "hints": [
+    "量比 0.67：缩量或量能不足",
+    "一个月窗口：走弱修复"
+   ],
+   "warnings": []
+  },
+  "volume_audit": {
+   "status": "ok",
+   "volume_ratio_5": 0.667,
+   "volume_ratio_10": 0.68,
+   "amount_ratio_5": null,
+   "turnover_rate": 3.02,
+   "turnover_status": "ok",
+   "obv_trend": "rising",
+   "price_volume_pattern": "pullback_shrink",
+   "volume_anomaly": null,
+   "signals": [
+    "缩量回踩"
+   ],
+   "risks": [],
+   "reason": "缩量回踩"
+  },
+  "anti_chase": {
+   "status": "ok",
+   "reason": "",
+   "metrics": {
+    "return_3d": -0.1896,
+    "return_5d": -0.1379,
+    "dist_ma5": -0.1689,
+    "dist_ma20": null,
+    "daily_pct": -0.2
+   }
+  },
+  "news_evidence": {
+   "code": "301217",
+   "name": "铜冠铜箔",
+   "themes": [
+    "创业板"
+   ],
+   "sentiment_label": "neutral",
+   "support_count": 0,
+   "direct_count": 0,
+   "inherited_count": 0,
+   "individual_backed": false,
+   "sources": [],
+   "bullish_snippets": [],
+   "bearish_snippets": [],
+   "risk_events": [],
+   "verdict_reason": "仅泛题材证据，无个股直接关联（继承多0 / 空0），不加分"
+  },
+  "strategy": "超跌反弹",
+  "trigger_reason": "20 日跌幅 -39.9%，缩量企稳",
+  "raw_features": {
+   "return_20d": -39.91,
+   "volume_shrink": true,
+   "hammer": false
+  },
+  "allow_when_phase_forbids": false,
+  "gate_status": "final",
+  "candidate_evidence": {
+   "code": "301217",
+   "name": "铜冠铜箔",
+   "strategy": {
+    "strategy_name": "超跌反弹",
+    "theme": "创业板",
+    "board": "创业板",
+    "role": null,
+    "score": 64.87,
+    "market_phase": "冰点期",
+    "is_trend_only": false,
+    "trigger_reason": "20 日跌幅 -39.9%，缩量企稳"
+   },
+   "data_quality": {
+    "overall": "ok",
+    "sources": {
+     "all_spot": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "rows": 5196,
+      "source": "replay_archive",
+      "source_quality": {
+       "status": "ok",
+       "source": "replay_archive"
+      },
+      "source_chain": [
+       {
+        "source": "replay_archive",
+        "ok": true,
+        "status": "ok",
+        "row_count": 5196
+       }
+      ],
+      "field_quality": {},
+      "warnings": []
+     },
+     "rps": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "mode": "real",
+      "count": 5192
+     },
+     "sentiment": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "posture": "正常",
+      "temperature": 49.04648399375366
+     },
+     "news": {
+      "status": "degraded",
+      "flashes": 0,
+      "stock_count": 0,
+      "available_sources": [],
+      "sources": {
+       "archive": {
+        "ok": false,
+        "status": "unavailable",
+        "mode": "exact_date_required",
+        "date": "20260720",
+        "error": "缺少 20260720 精确日期新闻归档，禁止用当前新闻替代历史证据"
+       }
+      },
+      "warnings": [
+       "缺少 20260720 精确日期新闻归档，禁止用当前新闻替代历史证据"
+      ]
+     },
+     "news_discovery": {
+      "status": "degraded",
+      "date": "20260720",
+      "reason": "新闻机会发现阶段超时或失败"
+     },
+     "strategy_framework": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "phase": "冰点期",
+      "pools": [
+       "超跌反弹",
+       "大市值低波",
+       "事件驱动"
+      ]
+     },
+     "trend_scan": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "candidates": 186
+     },
+     "quant_guard": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "kept_count": 188,
+      "watch_count": 0,
+      "rejected_count": 0
+     },
+     "entry_exit": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "computed": 188
+     },
+     "volume_audit": {
+      "status": "ok",
+      "date": "20260720",
+      "reason": "",
+      "computed": 188
+     },
+     "structured_data": {
+      "dragon_tiger_daily": {
+       "status": "removed",
+       "target_count": 0,
+       "success_count": 0,
+       "skipped_count": 0,
+       "item_count": 0,
+       "coverage_pct": null,
+       "warnings": [
+        "THS dragon tiger API returned no data. removed_per_policy: 东方财富数据源已全部移除，该因子无免费替代源"
+       ]
+      },
+      "hot_rank": {
+       "status": "ok",
+       "target_count": 0,
+       "success_count": 1,
+       "skipped_count": 0,
+       "item_count": 100,
+       "coverage_pct": null,
+       "warnings": []
+      },
+      "limit_up_sentiment": {
+       "status": "empty",
+       "target_count": 0,
+       "success_count": 1,
+       "skipped_count": 0,
+       "item_count": 0,
+       "coverage_pct": null,
+       "warnings": []
+      },
+      "capital_flow_120d": {
+       "status": "empty",
+       "target_count": 100,
+       "success_count": 0,
+       "skipped_count": 0,
+       "item_count": 0,
+       "coverage_pct": 0.0,
+       "warnings": []
+      },
+      "margin": {
+       "status": "degraded",
+       "target_count": 100,
+       "success_count": 0,
+       "skipped_count": 1,
+       "item_count": 0,
+       "coverage_pct": 0.0,
+       "warnings": [
+        "disabled by structured_data config"
+       ]
+      },
+      "lockup": {
+       "status": "empty",
+       "target_count": 100,
+       "success_count": 0,
+       "skipped_count": 0,
+       "item_count": 0,
+       "coverage_pct": 0.0,
+       "warnings": []
+      },
+      "research": {
+       "status": "degraded",
+       "target_count": 50,
+       "success_count": 0,
+       "skipped_count": 0,
+       "item_count": 0,
+       "coverage_pct": 0.0,
+       "warnings": [
+        "limited to top 50 candidates; 50 candidates omitted for runtime control"
+       ]
+      },
+      "announcements": {
+       "status": "degraded",
+       "target_count": 100,
+       "success_count": 24,
+       "skipped_count": 0,
+       "item_count": 24,
+       "coverage_pct": 24.0,
+       "warnings": [
+        "600535: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "002603: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "600066: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "688617: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "002311: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "300498: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "001872: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+        "003010: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query"
+       ]
+      },
+      "irm": {
+       "status": "degraded",
+       "target_count": 0,
+       "success_count": 0,
+       "skipped_count": 1,
+       "item_count": 0,
+       "coverage_pct": null,
+       "warnings": [
+        "disabled by structured_data config"
+       ]
+      },
+      "northbound": {
+       "status": "degraded",
+       "target_count": 50,
+       "success_count": 50,
+       "skipped_count": 0,
+       "item_count": 50,
+       "coverage_pct": 100.0,
+       "warnings": [
+        "limited to top 50 candidates; 50 candidates omitted for runtime control"
+       ]
+      },
+      "block_trade": {
+       "status": "degraded",
+       "target_count": 0,
+       "success_count": 0,
+       "skipped_count": 1,
+       "item_count": 0,
+       "coverage_pct": null,
+       "warnings": [
+        "disabled by structured_data config"
+       ]
+      },
+      "holder_num": {
+       "status": "degraded",
+       "target_count": 0,
+       "success_count": 0,
+       "skipped_count": 1,
+       "item_count": 0,
+       "coverage_pct": null,
+       "warnings": [
+        "disabled by structured_data config"
+       ]
+      },
+      "dividend": {
+       "status": "degraded",
+       "target_count": 50,
+       "success_count": 0,
+       "skipped_count": 0,
+       "item_count": 0,
+       "coverage_pct": 0.0,
+       "warnings": [
+        "limited to top 50 candidates; 50 candidates omitted for runtime control"
+       ]
+      },
+      "summary": {
+       "status": "ok",
+       "candidate_count": 100,
+       "deep_max_candidates": 100,
+       "total_budget_seconds": 180.0,
+       "remaining_budget_seconds": 173.67,
+       "note": "All Eastmoney sources removed per policy. Only non-EM public endpoints used."
+      }
+     },
+     "llm": {
+      "status": "degraded",
+      "mode": "rule",
+      "warnings": [
+       "未调用真实 LLM，使用规则验证"
+      ]
+     },
+     "fund_flow": {
+      "status": "failed",
+      "source": "replay_archive",
+      "rows": 0,
+      "warnings": [
+       "回放模式无资金流数据"
+      ],
+      "field_quality": {},
+      "source_quality": {
+       "status": "failed",
+       "source": "replay_archive",
+       "warnings": [
+        "回放模式无资金流数据"
+       ]
+      },
+      "source_chain": []
+     }
+    },
+    "missing_fields": {},
+    "source_quality": {
+     "all_spot": {
+      "status": "ok",
+      "source": "replay_archive"
+     },
+     "fund_flow": {
+      "status": "failed",
+      "source": "replay_archive",
+      "warnings": [
+       "回放模式无资金流数据"
+      ]
+     }
+    }
+   },
+   "price_action": {
+    "close": 103.24,
+    "pct_change": -20.0,
+    "rps": 2.7,
+    "rps_mode": "real",
+    "ma": {
+     "ma5": 124.22,
+     "ma10": 129.14,
+     "ma30": 150.19,
+     "ma60": 118.87,
+     "ma120": 79.04
+    },
+    "trend_windows": {
+     "week_1": {
+      "days": 5,
+      "return_pct": -13.79,
+      "pullback_from_high_pct": -25.17,
+      "rebound_from_low_pct": 0.0,
+      "state": "走弱修复"
+     },
+     "week_2": {
+      "days": 10,
+      "return_pct": -28.39,
+      "pullback_from_high_pct": -30.82,
+      "rebound_from_low_pct": 0.0,
+      "state": "走弱修复"
+     },
+     "month_1": {
+      "days": 20,
+      "return_pct": -47.46,
+      "pullback_from_high_pct": -45.38,
+      "rebound_from_low_pct": 0.0,
+      "state": "走弱修复"
+     }
+    },
+    "structure": {}
+   },
+   "volume_audit": {
+    "status": "ok",
+    "volume_ratio_5": 0.667,
+    "volume_ratio_10": 0.68,
+    "amount_ratio_5": null,
+    "turnover_rate": 3.02,
+    "turnover_status": "ok",
+    "obv_trend": "rising",
+    "price_volume_pattern": "pullback_shrink",
+    "volume_anomaly": null,
+    "signals": [
+     "缩量回踩"
+    ],
+    "risks": [],
+    "reason": "缩量回踩"
+   },
+   "liquidity": {
+    "turnover_rate": 3.02,
+    "turnover_status": "ok",
+    "turnover_missing": false,
+    "circ_mv_yi": 0.0,
+    "amount": null,
+    "fund_flow_status": "unavailable",
+    "fund_flow_net": null,
+    "fund_flow_global": {
+     "status": "failed",
+     "source": "replay_archive",
+     "rows": 0,
+     "warnings": [
+      "回放模式无资金流数据"
+     ],
+     "field_quality": {},
+     "source_quality": {
+      "status": "failed",
+      "source": "replay_archive",
+      "warnings": [
+       "回放模式无资金流数据"
+      ]
+     },
+     "source_chain": []
+    }
+   },
+   "news_evidence": {
+    "code": "301217",
+    "name": "铜冠铜箔",
+    "themes": [
+     "创业板"
+    ],
+    "sentiment_label": "neutral",
+    "support_count": 0,
+    "direct_count": 0,
+    "inherited_count": 0,
+    "individual_backed": false,
+    "sources": [],
+    "bullish_snippets": [],
+    "bearish_snippets": [],
+    "risk_events": [],
+    "verdict_reason": "仅泛题材证据，无个股直接关联（继承多0 / 空0），不加分"
+   },
+   "anti_chase": {
+    "status": "ok",
+    "reason": "",
+    "metrics": {
+     "return_3d": -0.1896,
+     "return_5d": -0.1379,
+     "dist_ma5": -0.1689,
+     "dist_ma20": null,
+     "daily_pct": -0.2
+    }
+   },
+   "entry_plan": {
+    "entry_style": "support_dip",
+    "trigger_price": 103.24,
+    "trigger_condition": "回踩近 10 日低点 103.24 低吸",
+    "ideal_entry_zone": [
+     99.11,
+     107.37
+    ],
+    "current_price": 103.24,
+    "is_chasing": false,
+    "invalid_condition": "跌破支撑位 2% 且不能快速收回"
+   },
+   "exit_plan": {
+    "entry_price": 103.24,
+    "initial_stop": 73.57,
+    "first_target": 162.58,
+    "final_target": 192.25,
+    "trailing_reference": 129.14,
+    "max_holding_days": 3,
+    "sentiment_exit_drop": 15.0,
+    "conservative_same_day_order": "stop_first",
+    "rules": [
+     {
+      "rule_type": "hard_stop",
+      "action": "exit_all",
+      "condition": "开盘或盘中触及硬止损 73.57",
+      "trigger_price": 73.57,
+      "priority": 10
+     },
+     {
+      "rule_type": "news_invalidation",
+      "action": "exit_all",
+      "condition": "出现立案、减持、业绩变脸、合同终止等直接负面事件",
+      "trigger_price": null,
+      "priority": 15
+     },
+     {
+      "rule_type": "market_retreat",
+      "action": "exit_all",
+      "condition": "市场进入冰点/退潮，或情绪温度较入场下降≥15点",
+      "trigger_price": null,
+      "priority": 20
+     },
+     {
+      "rule_type": "theme_invalidation",
+      "action": "exit_all",
+      "condition": "题材催化被证伪、核心龙头转弱或板块退出强势序列",
+      "trigger_price": null,
+      "priority": 25
+     },
+     {
+      "rule_type": "trend_break",
+      "action": "exit_all",
+      "condition": "收盘跌破MA10且放量，或有效跌破MA20",
+      "trigger_price": null,
+      "priority": 30
+     },
+     {
+      "rule_type": "first_target",
+      "action": "reduce_half",
+      "condition": "触及第一目标 162.58，减半并把止损抬到成本",
+      "trigger_price": 162.58,
+      "priority": 40
+     },
+     {
+      "rule_type": "final_target",
+      "action": "exit_all",
+      "condition": "触及最终目标 192.25",
+      "trigger_price": 192.25,
+      "priority": 45
+     },
+     {
+      "rule_type": "trailing_stop",
+      "action": "exit_all",
+      "condition": "盈利后收盘跌破跟踪参考 129.14",
+      "trigger_price": 129.14,
+      "priority": 50
+     },
+     {
+      "rule_type": "time_stop",
+      "action": "exit_all",
+      "condition": "持有满 3 个交易日仍未兑现，收盘退出",
+      "trigger_price": null,
+      "priority": 60
+     }
+    ]
+   },
+   "decision": {
+    "status": "final",
+    "reasons": [],
+    "confidence": 64.87
+   },
+   "raw": {
+    "score": 0.0,
+    "rps": 2.7,
+    "rps_mode": "real",
+    "fund_flow_status": "unavailable",
+    "xuanwu": null,
+    "guarded_state": "kept",
+    "entry_exit_snapshot": {
+     "entry_style": "support_dip",
+     "stop_loss": {
+      "price": 73.57,
+      "method": "ATR止损(2.0×ATR=14.84)"
+     },
+     "risk_reward_ratio": 2.0
+    },
+    "fund_flow_global": {
+     "status": "failed",
+     "source": "replay_archive",
+     "rows": 0,
+     "warnings": [
+      "回放模式无资金流数据"
+     ],
+     "field_quality": {},
+     "source_quality": {
+      "status": "failed",
+      "source": "replay_archive",
+      "warnings": [
+       "回放模式无资金流数据"
+      ]
+     },
+     "source_chain": []
+    }
+   }
+  },
+  "data_quality": {
+   "overall": "ok",
+   "sources": {
+    "all_spot": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "rows": 5196,
+     "source": "replay_archive",
+     "source_quality": {
+      "status": "ok",
+      "source": "replay_archive"
+     },
+     "source_chain": [
+      {
+       "source": "replay_archive",
+       "ok": true,
+       "status": "ok",
+       "row_count": 5196
+      }
+     ],
+     "field_quality": {},
+     "warnings": []
+    },
+    "rps": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "mode": "real",
+     "count": 5192
+    },
+    "sentiment": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "posture": "正常",
+     "temperature": 49.04648399375366
+    },
+    "news": {
+     "status": "degraded",
+     "flashes": 0,
+     "stock_count": 0,
+     "available_sources": [],
+     "sources": {
+      "archive": {
+       "ok": false,
+       "status": "unavailable",
+       "mode": "exact_date_required",
+       "date": "20260720",
+       "error": "缺少 20260720 精确日期新闻归档，禁止用当前新闻替代历史证据"
+      }
+     },
+     "warnings": [
+      "缺少 20260720 精确日期新闻归档，禁止用当前新闻替代历史证据"
+     ]
+    },
+    "news_discovery": {
+     "status": "degraded",
+     "date": "20260720",
+     "reason": "新闻机会发现阶段超时或失败"
+    },
+    "strategy_framework": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "phase": "冰点期",
+     "pools": [
+      "超跌反弹",
+      "大市值低波",
+      "事件驱动"
+     ]
+    },
+    "trend_scan": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "candidates": 186
+    },
+    "quant_guard": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "kept_count": 188,
+     "watch_count": 0,
+     "rejected_count": 0
+    },
+    "entry_exit": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "computed": 188
+    },
+    "volume_audit": {
+     "status": "ok",
+     "date": "20260720",
+     "reason": "",
+     "computed": 188
+    },
+    "structured_data": {
+     "dragon_tiger_daily": {
+      "status": "removed",
+      "target_count": 0,
+      "success_count": 0,
+      "skipped_count": 0,
+      "item_count": 0,
+      "coverage_pct": null,
+      "warnings": [
+       "THS dragon tiger API returned no data. removed_per_policy: 东方财富数据源已全部移除，该因子无免费替代源"
+      ]
+     },
+     "hot_rank": {
+      "status": "ok",
+      "target_count": 0,
+      "success_count": 1,
+      "skipped_count": 0,
+      "item_count": 100,
+      "coverage_pct": null,
+      "warnings": []
+     },
+     "limit_up_sentiment": {
+      "status": "empty",
+      "target_count": 0,
+      "success_count": 1,
+      "skipped_count": 0,
+      "item_count": 0,
+      "coverage_pct": null,
+      "warnings": []
+     },
+     "capital_flow_120d": {
+      "status": "empty",
+      "target_count": 100,
+      "success_count": 0,
+      "skipped_count": 0,
+      "item_count": 0,
+      "coverage_pct": 0.0,
+      "warnings": []
+     },
+     "margin": {
+      "status": "degraded",
+      "target_count": 100,
+      "success_count": 0,
+      "skipped_count": 1,
+      "item_count": 0,
+      "coverage_pct": 0.0,
+      "warnings": [
+       "disabled by structured_data config"
+      ]
+     },
+     "lockup": {
+      "status": "empty",
+      "target_count": 100,
+      "success_count": 0,
+      "skipped_count": 0,
+      "item_count": 0,
+      "coverage_pct": 0.0,
+      "warnings": []
+     },
+     "research": {
+      "status": "degraded",
+      "target_count": 50,
+      "success_count": 0,
+      "skipped_count": 0,
+      "item_count": 0,
+      "coverage_pct": 0.0,
+      "warnings": [
+       "limited to top 50 candidates; 50 candidates omitted for runtime control"
+      ]
+     },
+     "announcements": {
+      "status": "degraded",
+      "target_count": 100,
+      "success_count": 24,
+      "skipped_count": 0,
+      "item_count": 24,
+      "coverage_pct": 24.0,
+      "warnings": [
+       "600535: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "002603: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "600066: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "688617: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "002311: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "300498: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "001872: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query",
+       "003010: 403 Client Error: Forbidden for url: https://www.cninfo.com.cn/new/hisAnnouncement/query"
+      ]
+     },
+     "irm": {
+      "status": "degraded",
+      "target_count": 0,
+      "success_count": 0,
+      "skipped_count": 1,
+      "item_count": 0,
+      "coverage_pct": null,
+      "warnings": [
+       "disabled by structured_data config"
+      ]
+     },
+     "northbound": {
+      "status": "degraded",
+      "target_count": 50,
+      "success_count": 50,
+      "skipped_count": 0,
+      "item_count": 50,
+      "coverage_pct": 100.0,
+      "warnings": [
+       "limited to top 50 candidates; 50 candidates omitted for runtime control"
+      ]
+     },
+     "block_trade": {
+      "status": "degraded",
+      "target_count": 0,
+      "success_count": 0,
+      "skipped_count": 1,
+      "item_count": 0,
+      "coverage_pct": null,
+      "warnings": [
+       "disabled by structured_data config"
+      ]
+     },
+     "holder_num": {
+      "status": "degraded",
+      "target_count": 0,
+      "success_count": 0,
+      "skipped_count": 1,
+      "item_count": 0,
+      "coverage_pct": null,
+      "warnings": [
+       "disabled by structured_data config"
+      ]
+     },
+     "dividend": {
+      "status": "degraded",
+      "target_count": 50,
+      "success_count": 0,
+      "skipped_count": 0,
+      "item_count": 0,
+      "coverage_pct": 0.0,
+      "warnings": [
+       "limited to top 50 candidates; 50 candidates omitted for runtime control"
+      ]
+     },
+     "summary": {
+      "status": "ok",
+      "candidate_count": 100,
+      "deep_max_candidates": 100,
+      "total_budget_seconds": 180.0,
+      "remaining_budget_seconds": 173.67,
+      "note": "All Eastmoney sources removed per policy. Only non-EM public endpoints used."
+     }
+    },
+    "llm": {
+     "status": "degraded",
+     "mode": "rule",
+     "warnings": [
+      "未调用真实 LLM，使用规则验证"
+     ]
+    },
+    "fund_flow": {
+     "status": "failed",
+     "source": "replay_archive",
+     "rows": 0,
+     "warnings": [
+      "回放模式无资金流数据"
+     ],
+     "field_quality": {},
+     "source_quality": {
+      "status": "failed",
+      "source": "replay_archive",
+      "warnings": [
+       "回放模式无资金流数据"
+      ]
+     },
+     "source_chain": []
+    }
+   },
+   "missing_fields": {},
+   "source_quality": {
+    "all_spot": {
+     "status": "ok",
+     "source": "replay_archive"
+    },
+    "fund_flow": {
+     "status": "failed",
+     "source": "replay_archive",
+     "warnings": [
+      "回放模式无资金流数据"
+     ]
+    }
+   }
+  },
+  "fund_flow_risk": "资金流状态 unavailable，仅作中性偏弱证据",
+  "watch_reason": null,
+  "reject_reason": null,
+  "replay": true
+ }
+]
