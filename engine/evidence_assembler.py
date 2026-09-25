@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .evidence import CandidateEvidence, decision_from_item
+from .legacy_evidence import CandidateEvidence, decision_from_item
 
 
 class EvidenceAssembler:

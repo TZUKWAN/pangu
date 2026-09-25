@@ -1098,6 +1098,8 @@ app = FastAPI(
 # Phase 11：执行/策略/研究产品化 API（router 形式，保持 server 主文件清晰）
 from .execution_api import router as _execution_api_router  # noqa: E402
 app.include_router(_execution_api_router)
+from .decision_api import router as _decision_api_router  # noqa: E402
+app.include_router(_decision_api_router)
 
 
 @app.get("/")

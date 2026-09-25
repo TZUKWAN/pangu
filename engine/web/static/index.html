@@ -158,7 +158,10 @@ canvas{width:100%;max-width:100%}
       </div>
     </header>
     <nav class="main-nav" id="mainNav">
-      <button class="nav-btn active" data-view="today" data-testid="nav-today" onclick="switchView('today')">今日</button>
+      <button class="nav-btn active" data-view="today" data-testid="nav-today" onclick="switchView('today')">今日Top20</button>
+      <button class="nav-btn" data-view="stock" data-testid="nav-stock" onclick="switchView('stock')">个股</button>
+      <button class="nav-btn" data-view="system" data-testid="nav-system" onclick="switchView('system')">系统</button>
+      <span class="muted" style="padding:0 8px;align-self:center">高级：</span>
       <button class="nav-btn" data-view="execution" data-testid="nav-execution" onclick="switchView('execution')">执行</button>
       <button class="nav-btn" data-view="strategies" data-testid="nav-strategies" onclick="switchView('strategies')">策略</button>
       <button class="nav-btn" data-view="research" data-testid="nav-research" onclick="switchView('research')">研究</button>
@@ -297,6 +300,28 @@ canvas{width:100%;max-width:100%}
             <div class="muted" id="strategySettingsStatus" style="margin-top:8px">调整后保存，下一轮扫描生效</div>
           </div>
         </section>
+      </section>
+    </div>
+
+    <div class="scroll" id="view-stock" data-view="stock" style="display:none">
+      <section class="panel">
+        <div class="panel-hd">个股详情 <span class="muted">（Pangu 决策中间层 · 下一交易日计划）</span></div>
+        <div class="panel-body">
+          <div style="display:flex;gap:8px;margin-bottom:10px">
+            <input id="stockCodeInput" data-testid="stock-code-input" placeholder="6 位代码，如 600519" style="max-width:220px">
+            <button class="btn-primary" id="stockAnalyzeBtn" data-testid="stock-analyze-btn" onclick="analyzeStock()">分析</button>
+          </div>
+          <pre id="stockAnalyzeOut" data-testid="stock-analyze-out" style="white-space:pre-wrap;min-height:120px">输入代码后点击分析；输出为 Pangu 决策中间层的结构化结论。</pre>
+        </div>
+      </section>
+    </div>
+
+    <div class="scroll" id="view-system" data-view="system" style="display:none">
+      <section class="panel">
+        <div class="panel-hd">系统状态 <button class="btn-ghost" data-testid="system-refresh-btn" onclick="loadDecisionStatus()">刷新</button></div>
+        <div class="panel-body">
+          <pre id="decisionStatusOut" data-testid="decision-status-out" style="white-space:pre-wrap;min-height:120px">加载中…</pre>
+        </div>
       </section>
     </div>
 
@@ -1075,13 +1100,15 @@ function maybeAutoScanLatest(){
 // ---------------------------------------------------------------------- //
 // Phase 11：视图切换 + 执行 / 策略 / 研究 视图
 // ---------------------------------------------------------------------- //
-const VIEW_IDS={today:'mainScroll',execution:'view-execution',strategies:'view-strategies',research:'view-research'};
+const VIEW_IDS={today:'mainScroll',stock:'view-stock',system:'view-system',execution:'view-execution',strategies:'view-strategies',research:'view-research'};
 const VIEW_LOADED={};
 function switchView(name){
   if(!VIEW_IDS[name])return;
   document.querySelectorAll('#mainNav .nav-btn').forEach(b=>b.classList.toggle('active',b.dataset.view===name));
   Object.entries(VIEW_IDS).forEach(([key,id])=>{const el=$(id);if(el)el.style.display=(key===name)?'':'none';});
   if(name!=='today'&&!VIEW_LOADED[name]){VIEW_LOADED[name]=true;
+    if(name==='stock'){}
+    if(name==='system')loadDecisionStatus();
     if(name==='execution'){loadExecutionOverview(true);loadOrders();loadOrderStrategies();}
     if(name==='strategies')loadStrategies();
     if(name==='research')loadResearch();
@@ -1090,6 +1117,30 @@ function switchView(name){
 function setExecStatus(t){if($('execActionStatus'))$('execActionStatus').textContent=t||''}
 function setOrderStatus(t){if($('orderStatus'))$('orderStatus').textContent=t||''}
 
+async function analyzeStock(){
+  const code=($('stockCodeInput')?.value||'').trim();
+  const out=$('stockAnalyzeOut');
+  if(!/^\d{6}$/.test(code)){out.textContent='请输入 6 位数字代码';return}
+  out.textContent='分析中…（查询时刷新数据 + 单票决策）';
+  try{
+    const r=await fetch(API+'/api/decision/analyze',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code})});
+    const d=await r.json();
+    out.textContent=d.rendered||JSON.stringify(d).slice(0,2000);
+  }catch(e){out.textContent='分析失败: '+esc(e.message)}
+}
+async function loadDecisionStatus(){
+  const out=$('decisionStatusOut');
+  try{
+    const r=await fetch(API+'/api/decision/status');
+    const d=await r.json();
+    const lines=[`数据状态：${d.data_status}  决策日：${d.decision_date}  执行日：${d.execution_date}`];
+    Object.entries(d.sources||{}).forEach(([k,v])=>lines.push(`  ${k}: fetched=${v.fetched_at} age=${v.age_seconds}s stale=${v.stale} quality=${v.quality}`));
+    lines.push(`PIT 档案最新日：${(d.pit_archive||{}).max_date}`);
+    lines.push(`MCP：${(d.mcp||{}).transport}`);
+    out.textContent=lines.join('
+');
+  }catch(e){out.textContent='状态获取失败: '+esc(e.message)}
+}
 function modeBadgeClass(mode){return {PAPER:'mode-PAPER',SHADOW:'mode-SHADOW',LIVE:'mode-LIVE',MANUAL_CONFIRM:'mode-MANUAL_CONFIRM'}[mode]||''}
 function orderPill(status){
   const map={FILLED:['pill-ok','已成交'],PARTIALLY_FILLED:['pill-warn','部分成交'],ACKNOWLEDGED:['pill-info','已确认'],

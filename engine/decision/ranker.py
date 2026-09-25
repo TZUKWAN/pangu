@@ -118,8 +118,8 @@ class FactorEnsemble:
         ew_idx_ret = pct.mean(axis=1)
 
         calc = {
-            "rev_5d": lambda: -close.pct_change(5).iloc[-1],
-            "index_adj_rev_5d": lambda: -(close.pct_change(5).iloc[-1]
+            "rev_5d": lambda: -close.pct_change(5, fill_method=None).iloc[-1],
+            "index_adj_rev_5d": lambda: -(close.pct_change(5, fill_method=None).iloc[-1]
                                           - ew_idx_ret.iloc[-5:].sum()),
             "amihud_20d": lambda: ((pct.abs()) / amount.clip(lower=1e5))
             .rolling(20, min_periods=10).mean().iloc[-1] * 1e9,
