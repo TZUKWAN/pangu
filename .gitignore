@@ -16,6 +16,9 @@ __pycache__/
 .codex/
 .kimi/
 .qwen/
+# Pangu3 宿主适配命令文件需要随仓库分发（排除规则只针对本地状态目录）
+!.claude/commands/
+!.kimi/commands/
 CLAUDE_STATE.md
 
 # Local market data, reports, runtime artifacts, and DB files

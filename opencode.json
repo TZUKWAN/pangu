@@ -1,0 +1,11 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "pangu": {
+      "type": "local",
+      "command": [".venv/Scripts/python.exe", "-m", "engine.mcp.server"],
+      "enabled": true,
+      "_note": "需从仓库根目录启动 opencode"
+    }
+  }
+}

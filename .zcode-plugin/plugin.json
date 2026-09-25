@@ -1,0 +1,14 @@
+{
+  "name": "pangu-zcode-plugin",
+  "version": "3.0.0",
+  "description": "Pangu 3.0 A股研究与下一交易日决策中间层（ZCode 插件壳：MCP 为唯一业务来源）",
+  "mcpServers": {
+    "pangu": {
+      "command": ".venv/Scripts/python.exe",
+      "args": ["-m", "engine.mcp.server"]
+    }
+  },
+  "commands": ["commands/pangu.md"],
+  "skills": ["skills/pangu/SKILL.md"],
+  "_policy": "本插件不含 agents/ 子智能体组件；全部工作在当前会话执行。"
+}

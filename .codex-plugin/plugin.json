@@ -1,0 +1,12 @@
+{
+  "name": "pangu",
+  "version": "3.0.0",
+  "description": "Pangu 3.0 A股决策中间层（Codex 插件壳：业务能力全部来自 pangu MCP）",
+  "mcp": {
+    "config": ".mcp.json",
+    "note": "Codex 的 MCP 服务器在 ~/.codex/config.toml 注册：[mcp_servers.pangu] command='.venv/Scripts/python.exe' args=['-m','engine.mcp.server']（需从仓库根目录启动 codex）"
+  },
+  "skills": ["skills/pangu/SKILL.md"],
+  "commands": ["prompts/pangu.md"],
+  "_invocation": "Codex 以 $pangu 或 /prompts:pangu 触发自定义 prompt（随版本而异，以本机 codex 实测为准）；业务能力不经本壳，全部来自 MCP"
+}

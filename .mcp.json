@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "pangu": {
+      "type": "stdio",
+      "command": ".venv/Scripts/python.exe",
+      "args": ["-m", "engine.mcp.server"],
+      "env": {},
+      "_note": "Pangu MCP server。宿主（Claude Code / Codex 等）必须从仓库根目录启动以解析相对路径与 data/ 档案。"
+    }
+  }
+}
