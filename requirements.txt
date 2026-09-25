@@ -17,3 +17,4 @@ fastapi>=0.110.0         # Web 服务（HTML UI 后端）
 uvicorn>=0.29.0          # ASGI 服务器（配合 fastapi）
 PySide6>=6.7.0           # 独立桌面 GUI（LGPL 开源协议）
 pytest>=8.0.0            # 测试
+mcp>=1.0.0               # Pangu 3.0 MCP server（宿主 Agent 接入）

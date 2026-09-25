@@ -115,3 +115,41 @@ class TestServiceNoLLM:
         run = svc.analyze_stock("600001")
         assert len(run.recommendations.decisions) == 1
         assert run.recommendations.decisions[0].code == "600001"
+
+
+class TestNoArchiveCleanRoom:
+    """Round 5 发现：PIT 档案缺失（clean checkout）时服务不得崩溃。"""
+
+    def test_status_without_archive_is_honest_failed(self, tmp_path, monkeypatch):
+        import engine.data.pit_store as ps
+        import engine.decision.service as svc_mod
+
+        class BrokenStore:
+            def __init__(self, *a, **k):
+                raise FileNotFoundError("PIT 档案不存在")
+
+        monkeypatch.setattr(ps, "PITStore", BrokenStore)
+        svc = svc_mod.PanguDecisionService(
+            refresher=MarketContextRefresher(refreshers={}),
+            calendar=TradingCalendar(known_days=["20260813"], allow_online=False),
+            runstore=DecisionRunStore(runs_dir=tmp_path / "runs"))
+        st = svc.status()
+        assert st["data_status"] == "failed"
+        assert st["pit_archive"]["max_date"] is None
+        assert "PIT" in st.get("pit_error", "")
+
+    def test_recommend_without_archive_fails_closed(self, tmp_path, monkeypatch):
+        import engine.data.pit_store as ps
+        import engine.decision.service as svc_mod
+
+        class BrokenStore:
+            def __init__(self, *a, **k):
+                raise FileNotFoundError("PIT 档案不存在")
+
+        monkeypatch.setattr(ps, "PITStore", BrokenStore)
+        svc = svc_mod.PanguDecisionService(
+            refresher=MarketContextRefresher(refreshers={}),
+            calendar=TradingCalendar(known_days=["20260813"], allow_online=False),
+            runstore=DecisionRunStore(runs_dir=tmp_path / "runs"))
+        with pytest.raises(RuntimeError, match="fail-closed"):
+            svc.recommend_next_session(limit=5)

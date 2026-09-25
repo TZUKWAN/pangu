@@ -81,7 +81,8 @@ def _rpc_round(shim: Path, messages, timeout=90):
     py = sys.executable
     proc = subprocess.Popen([py, str(shim)], stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, cwd=ROOT,
+                            text=True, encoding="utf-8", errors="replace",
+                            cwd=ROOT,
                             env={"PYTHONPATH": ROOT, "SYSTEMROOT": r"C:\Windows"})
     lines = []
     n_ids = sum(1 for m in messages if '"id"' in m)

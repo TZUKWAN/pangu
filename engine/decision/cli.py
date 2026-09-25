@@ -34,10 +34,18 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     from engine.decision.service import PanguDecisionService
+
+    try:
+        return _dispatch(args, PanguDecisionService())
+    except Exception as e:  # noqa: BLE001 — 顶层诚实报错而非 traceback
+        print(f"错误：{e}", file=sys.stderr)
+        return 2
+
+
+def _dispatch(args, svc) -> int:
     from engine.decision.render import (render_top20, render_single,
                                         render_why, render_status)
 
-    svc = PanguDecisionService()
     if args.cmd == "recommend":
         run = svc.recommend_next_session(asof=args.asof, limit=args.limit,
                                          force_refresh=args.refresh)

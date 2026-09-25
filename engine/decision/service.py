@@ -38,7 +38,13 @@ class PanguDecisionService:
                  ranker: Optional[Top20Ranker] = None,
                  news_days: int = 3,
                  clock=None):
-        self.store = store or self._build_store()
+        # clean-room 容错：PIT 档案缺失时服务仍可构建（status 如实报告 failed），
+        # 只有真正生成推荐时才因无数据而明确失败（fail-closed，不编造）。
+        self._store_error: Optional[Exception] = None
+        try:
+            self.store = store or self._build_store()
+        except Exception as e:  # noqa: BLE001
+            self.store, self._store_error = None, e
         self.clock = clock
         self.calendar = calendar or TradingCalendar()
         self.refresher = refresher or self._build_refresher()
@@ -56,6 +62,9 @@ class PanguDecisionService:
                                codes: Optional[List[str]] = None,
                                persist: bool = True) -> DecisionRun:
         """/pangu 主入口：生成下一交易日 Top20 决策候选（无 LLM 参与）。"""
+        if self.store is None:
+            raise RuntimeError(
+                f"PIT 档案不可用，拒绝生成推荐（fail-closed）: {self._store_error!r}"[:200])
         request = request or DecisionRequest(
             limit=limit, force_refresh=force_refresh, codes=codes)
         ctx = build_asof_context(clock=self.clock, asof=request.asof or asof,
@@ -100,6 +109,18 @@ class PanguDecisionService:
     def status(self) -> Dict[str, Any]:
         """/pangu status：行情/新闻/公告/PIT 更新时间与 MCP 状态。"""
         ctx = build_asof_context(clock=self.clock, cal=self.calendar)
+        if self.store is None:
+            return {
+                "asof": ctx.asof_timestamp,
+                "decision_date": ctx.decision_date,
+                "execution_date": ctx.execution_date,
+                "market_status": ctx.market_status.value,
+                "data_status": "failed",
+                "sources": {},
+                "pit_archive": {"max_date": None},
+                "pit_error": repr(self._store_error)[:200],
+                "mcp": {"available": True, "transport": "stdio"},
+            }
         items = self.refresher.refresh_context(ctx)
         s = MarketContextRefresher.summarize(items)
         return {
