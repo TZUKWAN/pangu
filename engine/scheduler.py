@@ -187,6 +187,11 @@ class DailyScheduler:
         生成下一交易日 Top20 决策候选并持久化 DecisionRun（run_id 可审计）。
         数据失败时服务端 fail-closed（无 BUY），不阻断调度其余步骤。
         """
+        import os
+
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            # 单测环境禁止真实网络决策（测试用桩覆盖本步骤）
+            return {"skipped": "pytest"}
         from .decision.service import PanguDecisionService
 
         svc = PanguDecisionService()

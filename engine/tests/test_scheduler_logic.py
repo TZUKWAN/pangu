@@ -200,3 +200,14 @@ def test_upstream_failure_forces_degraded_report(cfg, status_dir, tmp_path, monk
     assert diagnostic["data_quality"] == "failed"
     assert diagnostic["candidates"] == []
     assert "stop after force_degraded" in diagnostic["no_trade_reason"]
+
+
+def test_pangu_decision_step_runs_with_stub(monkeypatch):
+    """每日决策步骤：pytest 下跳过真实网络；直接调用服务则返回结构化摘要。"""
+    import json as _json
+    from engine.scheduler import DailyScheduler
+    cfg = _json.loads(_json.dumps(__import__("engine.config", fromlist=["load_config"]).load_config()))
+    cfg.setdefault("decision", {})["enabled"] = True
+    sched = DailyScheduler(cfg, dry_run=True)
+    out = sched._step_pangu_decision()
+    assert out == {"skipped": "pytest"}

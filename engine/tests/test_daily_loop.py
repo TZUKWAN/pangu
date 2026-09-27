@@ -355,14 +355,19 @@ SCHED_CFG_BASE = {
 
 
 def test_scheduler_default_off_keeps_steps_unchanged(tmp_path):
-    """execution 未启用：步骤列表与历史完全一致（既有测试语义保持）。"""
+    """execution 未启用：无 execution_loop；pangu_decision 默认开启
+    （每日自动扫描），pytest 环境下该步骤为 skipped 桩。"""
     scheduler = DailyScheduler(SCHED_CFG_BASE, date=DATE, dry_run=True,
                                status_dir=tmp_path / "s1")
     summary = scheduler.run()
     names = [s["name"] for s in summary["steps"]]
     assert "execution_loop" not in names
-    assert names == ["rps_build", "snapshot_build", "scan", "report",
-                     "recommendation_loop", "notify"]
+    assert "pangu_decision" in names                       # Pangu 3.0 默认开启
+    step = next(s for s in summary["steps"] if s["name"] == "pangu_decision")
+    assert step["status"] == "skipped"                     # pytest 下不真跑网络
+    assert [n for n in names if n != "pangu_decision"] == [
+        "rps_build", "snapshot_build", "scan", "report",
+        "recommendation_loop", "notify"]
 
 
 def test_scheduler_enabled_appends_execution_step(tmp_path, monkeypatch):
