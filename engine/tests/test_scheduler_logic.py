@@ -31,7 +31,7 @@ def test_dry_run_skips_data_fetch(cfg, status_dir):
     assert summary["dry_run"] is True
     assert summary["overall_status"] == "ok"
     step_names = {s["name"] for s in summary["steps"]}
-    assert step_names == {"rps_build", "snapshot_build", "scan", "report", "recommendation_loop", "notify"}
+    assert step_names == {"rps_build", "snapshot_build", "scan", "report", "pangu_decision", "recommendation_loop", "notify"}
     for s in summary["steps"]:
         if s["name"] in ("rps_build", "snapshot_build", "scan"):
             assert s["status"] == "skipped", f"{s['name']} 应在 dry-run 跳过"

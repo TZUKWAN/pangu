@@ -26,6 +26,8 @@ data/*
 !data/.gitkeep
 # experiment registry and reports must be tracked (audit trail)
 !data/experiments/
+# 决策域持久化（命中表/run 历史）随仓库分发
+!data/decision/
 *.db
 *.sqlite
 *.sqlite3

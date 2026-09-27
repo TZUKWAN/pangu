@@ -170,6 +170,7 @@ class AsOfContext:
     market_status: MarketStatus
     calendar_estimated: bool = False
     warnings: List[str] = field(default_factory=list)
+    entry_style: str = "next_open"    # next_open | tail_close（service 填写）
 
     def to_dict(self) -> dict:
         return {

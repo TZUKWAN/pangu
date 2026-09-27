@@ -218,6 +218,8 @@ def main() -> None:
 
     # ---------------- BacktestV2 组合回测（BUY 子集） ---------------- #
     class RankerStrategy:
+        """基础版：每次调仓全量换到最新 BUY 列表。"""
+
         def __init__(self, picks):
             self.picks = picks
             self._last = set()
@@ -237,6 +239,43 @@ def main() -> None:
             self._last = set(buy_codes)
             return targets
 
+    class BufferedStrategy(RankerStrategy):
+        """缓冲带降换手版：保留旧持仓除非跌出 keep_n 名（Top40）；
+        空仓期（无 BUY）不主动清仓，仅随缓冲退出。"""
+
+        def __init__(self, picks, keep_n=40):
+            super().__init__(picks)
+            self.keep_n = keep_n
+
+        def _ranked_all(self, day):
+            p = self.picks.get(day, {})
+            return [c for c, m in sorted(p.items(), key=lambda kv: -kv[1]["score"])]
+
+        def rebalance(self, decision_date, history):
+            if decision_date not in self.picks:
+                return []
+            ranked = self._ranked_all(decision_date)
+            buy_codes = [c for c, m in self.picks[decision_date].items()
+                         if m["decision"] == "BUY"]
+            # 持仓篮 = 最新 BUY 前 keep_n ∩ 仍有 BUY 标记；旧持仓在 keep_n 内则保留
+            keep_set = set(ranked[: self.keep_n])
+            held = [c for c in self._last if c in keep_set]
+            new_buys = [c for c in buy_codes if c not in held]
+            final = held + new_buys
+            final = final[: self.keep_n] if len(final) > self.keep_n else final
+            if not final:
+                sells = [{"symbol": c, "side": "SELL", "weight": 0}
+                         for c in self._last]
+                self._last = set()
+                return sells
+            w = GROSS / len(final)
+            targets = [{"symbol": c, "side": "BUY", "weight": w}
+                       for c in final if c not in self._last]
+            for c in self._last - set(final):
+                targets.append({"symbol": c, "side": "SELL", "weight": 0})
+            self._last = set(final)
+            return targets
+
     from engine.research.data_interface import PITResearchData
 
     class CachedRD:
@@ -250,7 +289,8 @@ def main() -> None:
             return getattr(self.store, item)
 
     bt = BacktestV2(CachedRD(cached), BacktestConfig())
-    result = bt.run(RankerStrategy(picks), rebal_days[0],
+    strat = BufferedStrategy(picks) if "--buffered" in sys.argv         else RankerStrategy(picks)
+    result = bt.run(strat, rebal_days[0],
                     days[min(days.index(rebal_days[-1]) + 6, len(days) - 1)])
     summary = result.summary
 

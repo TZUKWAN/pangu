@@ -253,3 +253,7 @@ llm:
 schedule:
   enabled: true                 # 启动 web 服务后自动每日盘后跑链路
   scan_time: "15:05"            # 每日收盘后扫描（Asia/Shanghai）
+
+# Pangu 3.0 每日决策扫描（15:05 盘后自动生成下一交易日 Top20 + 持有计划）
+decision:
+  enabled: true

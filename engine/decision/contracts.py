@@ -112,6 +112,13 @@ class StockDecision:
     evidence_ids: List[str] = field(default_factory=list)
     score_breakdown: Dict[str, float] = field(default_factory=dict)
     reasons: List[str] = field(default_factory=list)
+    # ---- +5% 目标命中证据（engine/decision/target_prob.py）----
+    entry_style: str = "next_open"                # next_open | tail_close
+    target_pct: Optional[float] = None            # 默认 0.05（+5%）
+    target_hit_rate: Optional[float] = None       # 历史同类 setup 命中频率
+    target_hit_n: Optional[int] = None            # 样本数
+    target_hit_wilson_lb: Optional[float] = None  # 95% 置信下界
+    target_hit_cell: str = ""                     # 条件格标识
 
     def __post_init__(self) -> None:
         if isinstance(self.decision, str):

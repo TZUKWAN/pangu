@@ -181,6 +181,24 @@ class DailyScheduler:
         self.report_path = save_report(result, report_dir, force_degraded=self.force_degraded)
         return {"report_path": str(self.report_path), "degraded": self.force_degraded or result.data_quality != "ok"}
 
+    def _step_pangu_decision(self) -> dict[str, Any]:
+        """Pangu 3.0：每日自动决策扫描（15:05 盘后）。
+
+        生成下一交易日 Top20 决策候选并持久化 DecisionRun（run_id 可审计）。
+        数据失败时服务端 fail-closed（无 BUY），不阻断调度其余步骤。
+        """
+        from .decision.service import PanguDecisionService
+
+        svc = PanguDecisionService()
+        run = svc.recommend_next_session()
+        tset = run.recommendations
+        return {
+            "run_id": run.run_id,
+            "execution_date": run.execution_date,
+            "counts": tset.counts() if tset else {},
+            "data_status": tset.data_status if tset else "unknown",
+        }
+
     def _step_execution_loop(self) -> dict[str, Any]:
         """Pangu 2.0 每日执行循环（默认关闭：execution.enabled=true 才启用）。
 
@@ -310,6 +328,14 @@ class DailyScheduler:
             self._step_report,
             skip=self.dry_run,
         ))
+
+        # 4.4 Pangu 3.0 每日决策扫描（decision.enabled=true 时加入，默认开启）
+        if bool((self.cfg.get("decision") or {}).get("enabled", True)):
+            self.results.append(self._run_step(
+                "pangu_decision",
+                self._step_pangu_decision,
+                skip=self.dry_run,
+            ))
 
         # 4.5 执行循环（可选步骤，默认关闭：execution.enabled=true 才加入步骤列表）
         if bool((self.cfg.get("execution") or {}).get("enabled", False)):

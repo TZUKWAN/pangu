@@ -1,0 +1,85 @@
+{
+ "cells": {
+  "risk_off|rev_q4": [
+   42862,
+   129251
+  ],
+  "risk_off|rev_q5": [
+   13481,
+   55773
+  ],
+  "risk_off|rev_q2": [
+   290690,
+   847817
+  ],
+  "risk_off|rev_q3": [
+   229025,
+   678265
+  ],
+  "risk_off|rev_q1": [
+   59290,
+   172213
+  ],
+  "neutral|rev_q1": [
+   30793,
+   88867
+  ],
+  "neutral|rev_q2": [
+   175129,
+   514221
+  ],
+  "neutral|rev_q4": [
+   24141,
+   71463
+  ],
+  "neutral|rev_q3": [
+   126719,
+   366090
+  ],
+  "neutral|rev_q5": [
+   9059,
+   34430
+  ],
+  "risk_on|rev_q2": [
+   290659,
+   753163
+  ],
+  "risk_on|rev_q1": [
+   42468,
+   113282
+  ],
+  "risk_on|rev_q3": [
+   183769,
+   480670
+  ],
+  "risk_on|rev_q4": [
+   32404,
+   94890
+  ],
+  "risk_on|rev_q5": [
+   12659,
+   49850
+  ],
+  "risk_off|rev_all": [
+   635348,
+   1883319
+  ],
+  "neutral|rev_all": [
+   365841,
+   1075071
+  ],
+  "risk_on|rev_all": [
+   561959,
+   1491855
+  ],
+  "all|rev_all": [
+   1563148,
+   4450245
+  ]
+ },
+ "min_n": 30,
+ "target_pct": 0.05,
+ "stop_pct": 0.05,
+ "horizon": 10,
+ "built_range": "2022-01-04→2025-12-31"
+}

@@ -27,6 +27,8 @@ from engine.decision.contracts import (ConfidenceType, DecisionAction,
                                        MarketStatus, StockDecision,
                                        Top20DecisionSet)
 from engine.decision.holding import build_holding_plan
+from engine.decision.target_prob import (HitEstimate, TargetHitTable,
+                                         rev_bucket)
 from engine.decision.regime import (MarketRegime, RegimeLabel,
                                     REGIME_WEIGHT_PROFILES, compute_regime)
 from engine.evidence.engine import decay as evidence_decay
@@ -195,13 +197,22 @@ class Top20Ranker:
     """主排序器：request + ctx + evidence → DecisionRun。"""
 
     def __init__(self, store, ensemble: Optional[FactorEnsemble] = None,
-                 capital: float = DEFAULT_CAPITAL):
+                 capital: float = DEFAULT_CAPITAL,
+                 hit_table: Optional["TargetHitTable"] = None,
+                 require_target_evidence: bool = False):
         self.store = store
         self.ensemble = ensemble or FactorEnsemble()
         self.capital = capital
+        self.hit_table = hit_table
+        self.horizon_tables: Optional[Dict[int, "TargetHitTable"]] = None
+        # 命中表存在任何有效数据格时，BUY 必须有 ≥5% 目标证据线支撑
+        self.require_target_evidence = require_target_evidence or bool(
+            hit_table and any(n >= hit_table.min_n for _, n in
+                              (hit_table.cells or {}).values()))
 
     def rank(self, request: DecisionRequest, ctx: AsOfContext,
              evidence: Optional[List[EvidenceItem]] = None,
+             entry_style: str = "next_open",
              data_status: str = "ok",
              source_health: Optional[Dict[str, Any]] = None,
              data_freshness: Optional[Dict[str, Any]] = None,
@@ -218,6 +229,11 @@ class Top20Ranker:
         regime = compute_regime(panel, index_close, asof_iso)
         alpha, _cross = self.ensemble.compute_scores(panel, asof_iso)
         ev_alpha = EventAlpha(evidence or [], asof_iso)
+        # 反转因子独立截面 z（目标命中率条件维度）
+        close_all_pre = panel["close"].unstack("code").sort_index().loc[:asof_iso]
+        ret5 = close_all_pre.pct_change(5, fill_method=None).iloc[-1]
+        r5sd = float(ret5.std())
+        rev5_z = (ret5 - ret5.mean()) / r5sd if r5sd and r5sd > 0 else ret5 * 0.0
 
         close_all = panel["close"].unstack("code").sort_index().loc[:asof_c]
         amount_all = panel["amount"].unstack("code").sort_index().loc[:asof_c]
@@ -233,7 +249,7 @@ class Top20Ranker:
             if self._names.get(code) is None and request.codes:
                 continue
             feats = self._stock_features(code, close_all, liq20, alpha, ev_alpha,
-                                         regime.label)
+                                         regime.label, rev5_z=rev5_z)
             if feats is None:
                 continue
             rows.append((feats["score"], feats))
@@ -242,7 +258,14 @@ class Top20Ranker:
         picked = rows[:limit]
         decisions: List[StockDecision] = []
         for i, (score, f) in enumerate(picked, start=1):
-            dec, reasons, risks = self._decide(f, data_status, regime)
+            hit: Optional[HitEstimate] = None
+            if self.hit_table is not None:
+                hit = self.hit_table.lookup(regime.label.value,
+                                            f.get("rev5_z"))
+            hold_h, hold_note = self._choose_holding_by_odds(regime.label.value,
+                                                             f.get("rev5_z"),
+                                                             f["vol20"])
+            dec, reasons, risks = self._decide(f, data_status, regime, hit)
             hp = build_holding_plan(
                 f["code"], close_all[f["code"]].dropna(), f["vol20"],
                 f["event_half_life"], regime)
@@ -260,8 +283,8 @@ class Top20Ranker:
                 stop_loss=hp.exit_plan.hard_stop if hp.exit_plan else None,
                 target_zone=[hp.exit_plan.profit_target] if hp.exit_plan
                 and hp.exit_plan.profit_target else None,
-                expected_holding_days=hp.expected_holding_days,
-                holding_range=hp.holding_range,
+                expected_holding_days=hold_h,
+                holding_range=self._range_for(hold_h),
                 exit_conditions=hp.exit_plan.to_conditions() if hp.exit_plan else [],
                 primary_strategy=f["dominant"],
                 factor_evidence=[f"factor:{k}:{round(v, 3)}"
@@ -271,9 +294,16 @@ class Top20Ranker:
                                  f"breadth:{regime.breadth_above_ma20:.2f}"],
                 liquidity_evidence=[f"amount20:{f['amount20'] / 1e8:.2f}亿",
                                     f"feasibility:{f['feasibility']:.2f}"],
-                risks=risks, reasons=reasons,
+                risks=risks,
+                reasons=(reasons + ([hold_note] if hold_note else [])),
                 score_breakdown={k: round(v, 3) for k, v in f["breakdown"].items()},
                 evidence_ids=f["evidence_ids"],
+                entry_style=entry_style,
+                target_pct=self.hit_table.target_pct if self.hit_table else 0.05,
+                target_hit_rate=(hit.rate if hit else None),
+                target_hit_n=(hit.n if hit else None),
+                target_hit_wilson_lb=(hit.wilson_lb if hit else None),
+                target_hit_cell=(hit.cell if hit else ""),
                 freshness={"panel_last_date": str(last_day),
                            "asof": asof_iso}))
 
@@ -303,7 +333,7 @@ class Top20Ranker:
 
     # ------------------------------------------------------------------ #
     def _stock_features(self, code, close_all, liq20, alpha, ev_alpha,
-                        label) -> Optional[dict]:
+                        label, rev5_z=None) -> Optional[dict]:
         if code not in close_all.columns:
             return None
         s = close_all[code].dropna()
@@ -314,6 +344,7 @@ class Top20Ranker:
         if amount20 < LIQUIDITY_FLOOR_AMOUNT:
             return None                                        # 流动性地板
         f_score = float(alpha.get(code, 0.0)) if len(alpha) else 0.0
+        rev5_z_val = float(rev5_z.get(code, 0.0)) if rev5_z is not None else 0.0
         evf = ev_alpha.features(code)
         # 事件半衰期（该股最强事件）
         hl = ev_alpha.best_half_life.get(code)
@@ -343,7 +374,8 @@ class Top20Ranker:
         dominant = max({"factor_alpha": breakdown["factor_alpha"],
                         "event_alpha": breakdown["event_alpha"]},
                        key=lambda k: breakdown[k])
-        parts = {"combined_factor_z": round(f_score, 3)}
+        parts = {"combined_factor_z": round(f_score, 3),
+                 "rev5_z": round(float(rev5_z_val), 3)}
         return {"code": code, "name": self._name_of(code), "score": float(score),
                 "vol20": vol20, "amount20": amount20,
                 "feasibility": feasibility, "breakdown": breakdown,
@@ -355,7 +387,35 @@ class Top20Ranker:
                 "event_evidence": list(ev_alpha.buyable_evidence.get(code, [])),
                 "evidence_ids": list(ev_alpha.buyable_evidence.get(code, []))}
 
-    def _decide(self, f, data_status, regime) -> Tuple[DecisionAction, List[str], List[str]]:
+    def _choose_holding_by_odds(self, regime_label: str, rev_z,
+                                vol20: float) -> Tuple[int, str]:
+        """选择"最小充分"持有期：最小的、其 +5% 触及频率 95% 置信下界 ≥ 30%
+        的 horizon（5→10→20）；无一致达标者 → 取下界最大者并注明。"""
+        if not self.horizon_tables:
+            return 5, ""
+        best_h, best_lb, note = None, -1.0, ""
+        for h in (5, 10, 20):
+            t = self.horizon_tables.get(h)
+            if t is None:
+                continue
+            est = t.lookup(regime_label, rev_z)
+            if est.buy_eligible:
+                return h, (f"持有 {h}d：同类 setup 触及 +5% 频率 "
+                           f"{est.rate:.0%}（n={est.n}，下界 {est.wilson_lb:.0%}）")
+            if est.wilson_lb > best_lb:
+                best_h, best_lb = h, est.wilson_lb
+                note = (f"持有 {h}d：+5% 触及频率 {est.rate:.0%}"
+                        f"（下界 {est.wilson_lb:.0%}）——未达 30% 证据线，"
+                        "已如实降级观察")
+        return (best_h or 5), note
+
+    @staticmethod
+    def _range_for(h: int) -> List[int]:
+        return {1: [1, 2], 3: [2, 4], 5: [3, 7], 10: [5, 12], 20: [10, 20]}.get(
+            h, [max(1, h - 2), h + 2])
+
+    def _decide(self, f, data_status, regime,
+                hit: Optional[HitEstimate] = None) -> Tuple[DecisionAction, List[str], List[str]]:
         reasons: List[str] = []
         risks: List[str] = []
         if data_status == "failed":
@@ -375,7 +435,14 @@ class Top20Ranker:
             if f["dominant"] == "event_alpha" and not f["event_evidence"]:
                 reasons.append("事件驱动分不可由 Tier D 单源支撑 → WATCH")
                 return DecisionAction.WATCH, reasons, risks
+            if hit is not None and self.require_target_evidence                     and not hit.buy_eligible:
+                reasons.append(
+                    f"≥5% 目标历史证据不足（n={hit.n}, wilson_lb={hit.wilson_lb:.2f}）→ WATCH")
+                return DecisionAction.WATCH, reasons, risks
             reasons.append(f"风险调整分 {f['score']:.1f} ≥ {SCORE_BUY_THRESHOLD:.0f}")
+            if hit is not None and hit.n:
+                reasons.append(f"同类 setup 持有窗触及 +5% 频率 {hit.rate:.0%}"
+                               f"（n={hit.n}, 下界 {hit.wilson_lb:.0%}）")
             if f["event_strength"] > 0.1:
                 reasons.append(f"事件催化强度 {f['event_strength']:.2f}")
             reasons.append("反转/流动性因子方向经研究窗 OOS 验证")

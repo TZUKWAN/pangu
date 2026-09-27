@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "pangu": {
+      "type": "stdio",
+      "command": ".venv/Scripts/python.exe",
+      "args": ["-m", "engine.mcp.server"],
+      "env": {},
+      "cwd": "<仓库根目录绝对路径>",
+      "_note": "WorkBuddy(CodeBuddy IDE)：在 MCP 面板手动添加 stdio server，粘贴本文件字段；cwd 必须为 Pangu 仓库根目录绝对路径"
+    }
+  }
+}

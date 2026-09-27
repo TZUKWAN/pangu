@@ -133,7 +133,29 @@ def pangu(limit: int = 20) -> str:
     )
 
 
+def _warm() -> None:
+    """后台预热：预载 PIT 档案与服务单例，消除首工具调用的冷启动延迟。"""
+    import threading
+
+    def _job():
+        try:
+            from engine.data.pit_store import PITStore
+            from engine.decision.ranker import Top20Ranker
+            warm_store = PITStore(preload=True)   # 全档案载入内存（约 1-2 分钟）
+            warm_ranker = Top20Ranker(warm_store)
+            _service = get_service()
+            _service.store = warm_store
+            _service.ranker = warm_ranker
+            _service.ranker.hit_table = _service.hit_table
+            _service.ranker.horizon_tables = _service.hit_tables
+        except Exception:  # noqa: BLE001 — 预热失败不影响服务可用性
+            pass
+
+    threading.Thread(target=_job, daemon=True).start()
+
+
 def main() -> None:
+    _warm()
     server.run(transport="stdio")
 
 

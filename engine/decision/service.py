@@ -25,6 +25,8 @@ from engine.evidence.engine import (EntityLinker, build_news_evidence,
                                     cluster_events)
 from engine.evidence.model import EvidenceItem
 
+from engine.decision.target_prob import TABLE_PATH, TargetHitTable
+
 ANNOUNCEMENT_DIR = Path("data/announcement_archive")
 WSCN_DIR = Path("data/wscn_news_archive")
 
@@ -51,16 +53,41 @@ class PanguDecisionService:
         self.runstore = runstore or DecisionRunStore()
         self.ranker = ranker or Top20Ranker(self.store)
         self.news_days = news_days
+        # +5% 目标命中表：多持有期（5/10/20d）× 双入场（次日开盘/当日尾盘）
+        self.hit_tables: Dict[int, TargetHitTable] = {}
+        self.hit_tables_tail: Dict[int, TargetHitTable] = {}
+        for h in (5, 10, 20):
+            t = TargetHitTable.load(TABLE_PATH.parent / f"target_hit_table_h{h}.json")
+            if t.cells:
+                self.hit_tables[h] = t
+            tt = TargetHitTable.load(
+                TABLE_PATH.parent / f"target_hit_table_h{h}.tail.json")
+            if tt.cells:
+                self.hit_tables_tail[h] = tt
+        self.hit_table = self.hit_tables.get(5) or TargetHitTable()
+        self.ranker.hit_table = self.hit_table
+        self.ranker.horizon_tables = self.hit_tables
 
     # ------------------------------------------------------------------ #
     # 公开 API
     # ------------------------------------------------------------------ #
+    def _resolve_entry_style(self, ctx: AsOfContext, override: Optional[str]) -> str:
+        """auto：盘中 14:30-14:57 → 当日尾盘；其余（盘后/早盘/周末）→ 次日开盘。"""
+        if override in ("tail_close", "next_open"):
+            return override
+        if ctx.market_status.value == "open":
+            hhmm = ctx.asof_timestamp[11:16]
+            if "14:30" <= hhmm <= "14:57":
+                return "tail_close"
+        return "next_open"
+
     def recommend_next_session(self, request: Optional[DecisionRequest] = None,
                                asof: Optional[str] = None,
                                limit: int = 20,
                                force_refresh: bool = False,
                                codes: Optional[List[str]] = None,
-                               persist: bool = True) -> DecisionRun:
+                               persist: bool = True,
+                               entry_style: Optional[str] = None) -> DecisionRun:
         """/pangu 主入口：生成下一交易日 Top20 决策候选（无 LLM 参与）。"""
         if self.store is None:
             raise RuntimeError(
@@ -69,6 +96,16 @@ class PanguDecisionService:
             limit=limit, force_refresh=force_refresh, codes=codes)
         ctx = build_asof_context(clock=self.clock, asof=request.asof or asof,
                                  cal=self.calendar)
+        ctx.entry_style = self._resolve_entry_style(ctx, entry_style)
+        if ctx.entry_style == "tail_close":
+            # 尾盘决策：入场 = 今日收盘，execution_date = 今天；命中表切换尾盘口径
+            ctx.execution_date = ctx.decision_date
+            if self.hit_tables_tail:
+                self.ranker.hit_table = self.hit_tables_tail.get(5)                     or self.ranker.hit_table
+                self.ranker.horizon_tables = self.hit_tables_tail
+        else:
+            self.ranker.hit_table = self.hit_table
+            self.ranker.horizon_tables = self.hit_tables
         if request.query_timestamp:
             ctx.query_timestamp = request.query_timestamp
         if request.requested_execution_date:
@@ -95,6 +132,7 @@ class PanguDecisionService:
                                                       entity_links=links))
 
         run = self.ranker.rank(request, ctx, evidence=ev_items,
+                               entry_style=ctx.entry_style,
                                data_status=summary["data_status"],
                                source_health={i.source: i.quality
                                               for i in fresh_items},
