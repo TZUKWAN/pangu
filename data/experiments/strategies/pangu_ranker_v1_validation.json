@@ -1,0 +1,63 @@
+{
+ "model": "pangu_ranker_v1",
+ "window": [
+  "2022-01-04",
+  "2025-12-31"
+ ],
+ "rebalances": 166,
+ "depth_stats": {
+  "5": {
+   "n": 830,
+   "mean_fwd5": 0.0022670639555377606,
+   "median_fwd5": -0.004422597587348309,
+   "hit_rate": 0.463855421686747,
+   "precision_vs_universe_median": 0.4710843373493976
+  },
+  "10": {
+   "n": 1660,
+   "mean_fwd5": 0.001255867116507629,
+   "median_fwd5": -0.004588345864661614,
+   "hit_rate": 0.46204819277108433,
+   "precision_vs_universe_median": 0.4644578313253012
+  },
+  "20": {
+   "n": 3320,
+   "mean_fwd5": 0.0014789626956454999,
+   "median_fwd5": -0.00421052838930297,
+   "hit_rate": 0.46656626506024096,
+   "precision_vs_universe_median": 0.46987951807228917
+  }
+ },
+ "buy_vs_watch": {
+  "buy_n": 233,
+  "buy_mean_fwd5": 0.003376248288170886,
+  "watch_n": 3087,
+  "watch_mean_fwd5": 0.0013357597338513904
+ },
+ "rank_ic_fwd5": -0.027181820381703383,
+ "regret_vs_universe_mean_fwd5": 0.0018038696532417025,
+ "horizon_accuracy": {
+  "n": 3320,
+  "chosen_h_beats_avg_other": 0.5153614457831325
+ },
+ "backtest": {
+  "total_return": -0.1371969966620099,
+  "sharpe": -0.27397966672958196,
+  "profit_factor": 0.7273281411,
+  "max_drawdown": 0.3861818009643294,
+  "win_rate_trades": 0.3103448275862069,
+  "n_trades": 87,
+  "execution_rate": 0.8770053475935828,
+  "turnover": 3.2134219289379913
+ },
+ "dsr": 0.28095212156274696,
+ "bootstrap_sharpe_ci": {
+  "lo": -0.0006179043779268227,
+  "hi": 0.00036917292044557005,
+  "point": -0.00012784302157742416,
+  "n": 500,
+  "block": 5
+ },
+ "news_ablation": "deferred: PIT 新闻档案不覆盖研究窗（2026 起才有）；以每日 journal 前瞻评估",
+ "elapsed_s": 90.8
+}

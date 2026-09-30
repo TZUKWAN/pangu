@@ -1,0 +1,24 @@
+{
+ "full": {
+  "total_return": 0.7419608641207238,
+  "sharpe": 0.7584726038394759,
+  "profit_factor": 1.5336626963,
+  "max_drawdown": 0.4138825856746628,
+  "n_trades": 392,
+  "execution_rate": 0.9379562043795621,
+  "turnover": 18.63220120841793,
+  "win_rate_trades": 0.548469387755102,
+  "target5_touch_proxy": 0.3622
+ },
+ "oos_2025": {
+  "total_return": 0.5526350433482916,
+  "sharpe": 2.4901200619596855,
+  "profit_factor": 3.8808984006,
+  "max_drawdown": 0.11195380160170194,
+  "n_trades": 116,
+  "execution_rate": 0.9567099567099567,
+  "turnover": 20.29084079280864,
+  "win_rate_trades": 0.6293103448275862,
+  "target5_touch_proxy": 0.4224
+ }
+}

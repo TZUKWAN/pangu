@@ -54,7 +54,23 @@ SUPPORTED_FACTORS = {
     "realized_vol_20d": ("lowvol", "_f_lowvol"),
     "turnover_20d_avg": ("lowturnover", "_f_lowturn"),
     "volume_price_div_20d": ("lowturnover", "_f_vpr"),
+    "mom60_reversal": ("reversal", "_f_mom60rev"),
 }
+
+
+V2_CONFIG_PATH = Path("data/experiments/strategies/pangu_ranker_v2_confirm.json")
+V2_FACTORS = ["rev_5d", "realized_vol_20d", "turnover_20d_avg",
+              "amihud_20d", "volume_price_div_20d", "mom60_reversal"]
+
+
+def load_v2_enabled() -> bool:
+    """v2（等权 6 因子）在其 OOS 确认实验 PF>1 时启用（登记驱动）。"""
+    try:
+        d = json.loads(V2_CONFIG_PATH.read_text(encoding="utf-8"))
+        oos = d.get("oos_2025", {})
+        return float(oos.get("profit_factor") or 0) > 1.0
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
 
 
 def load_factor_specs(factor_dir: str = "data/experiments/factors",
@@ -201,7 +217,11 @@ class Top20Ranker:
                  hit_table: Optional["TargetHitTable"] = None,
                  require_target_evidence: bool = False):
         self.store = store
-        self.ensemble = ensemble or FactorEnsemble()
+        self.ensemble = ensemble or (
+            FactorEnsemble(specs=[
+                {"factor": f, "family": SUPPORTED_FACTORS[f][0],
+                 "ic_h5": None, "direction": 1.0, "weight": 1.0 / len(V2_FACTORS)}
+                for f in V2_FACTORS]) if load_v2_enabled() else FactorEnsemble())
         self.capital = capital
         self.hit_table = hit_table
         self.horizon_tables: Optional[Dict[int, "TargetHitTable"]] = None

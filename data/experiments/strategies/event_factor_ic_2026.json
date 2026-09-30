@@ -1,0 +1,24 @@
+{
+ "window": [
+  "2026-01-05",
+  "2026-09-04"
+ ],
+ "items": 41681,
+ "events": 15952,
+ "ic5_mean": -0.010705635560588298,
+ "ic5_days": 130,
+ "ic10_mean": -0.002925636726129218,
+ "direction_hit_rate": 0.505811773528309,
+ "direction_n": 2667,
+ "tier_split_beat_median": {
+  "AB_tier": {
+   "beat_rate": 0.4882,
+   "n": 2042
+  },
+  "CD_tier": {
+   "beat_rate": null,
+   "n": 0
+  }
+ },
+ "elapsed_s": 243.3
+}
