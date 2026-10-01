@@ -107,10 +107,10 @@ def main() -> None:
     oos_days = [d for d in days if d >= OOS_START]
 
     results = {}
-    for label, (a, b) in {
-        "full": (days[80], days[-1]),
-        "oos_2025": (oos_days[0], oos_days[-1]),
-    }.items():
+    segments = {"full": (days[80], days[-1])}
+    if oos_days:
+        segments["oos_2025"] = (oos_days[0], oos_days[-1])
+    for label, (a, b) in segments.items():
         strat = EqualWeight6(z)
         res = bt.run(strat, a, b)
         s = res.summary
