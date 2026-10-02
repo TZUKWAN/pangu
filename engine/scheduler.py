@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sqlite3
 import sys
 import time
 import traceback
@@ -294,10 +295,77 @@ class DailyScheduler:
         from .cli import _build_pipeline as build
         return build(self.cfg)
 
+    def _is_trading_day(self, date_str: str) -> bool:
+        """判断是否 A 股交易日：akshare 交易日历优先（网络失败自动回退），
+        回退链：本地档案交易日历 → 周末排除（识别不了节假日）。"""
+        try:
+            import akshare as ak
+            df = ak.tool_trade_date_hist_sina()
+            if df is not None and not df.empty:
+                trade_days = set(
+                    df["trade_date"].astype(str).str.replace("-", "")
+                )
+                return date_str in trade_days
+        except Exception:  # noqa: BLE001
+            pass
+        # 回退 1：本地回放档案的交易日历（真实交易日，无节假日预测能力）
+        archive = Path("data/market_breadth/raw.sqlite3")
+        if archive.exists():
+            try:
+                with sqlite3.connect(
+                    f"file:{archive.as_posix()}?mode=ro", uri=True
+                ) as conn:
+                    archived = {
+                        str(r[0]) for r in conn.execute(
+                            "SELECT DISTINCT date FROM breadth_raw"
+                        ).fetchall()
+                    }
+                if date_str in archived:
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+        # 回退 2：仅排除周末（识别不了节假日）
+        try:
+            return datetime.strptime(date_str, "%Y%m%d").weekday() < 5
+        except Exception:  # noqa: BLE001
+            return True
+
     def run(self) -> dict[str, Any]:
         """执行完整盘后链路，返回状态摘要。"""
         self.results = []
         overall_start = time.time()
+
+        # 0. 交易日守卫：休市日（周末/节假日）跳过全部重链路。
+        #    休市日行情为节前收盘数据，跑扫描只会产出重复记录，
+        #    且部分上游接口在休市日会无限期挂起（实测 20261002 国庆假期）。
+        if not self.dry_run and not self._is_trading_day(self.date):
+            logger.info("[scheduler] %s 为 A 股休市日，跳过盘后链路（--date 指定交易日可强制重跑）", self.date)
+            self.results.append(StepResult(
+                name="trading_day_guard",
+                status="skipped",
+                duration_seconds=0.0,
+                error=None,
+            ))
+            summary = {
+                "date": self.date,
+                "run_at": datetime.now().isoformat(),
+                "dry_run": self.dry_run,
+                "overall_status": "ok",
+                "overall_duration_seconds": 0.0,
+                "steps": [
+                    {"name": r.name, "status": r.status,
+                     "duration_seconds": r.duration_seconds, "error": r.error}
+                    for r in self.results
+                ],
+                "report_path": None,
+                "candidate_count": 0,
+                "data_quality": "not_applicable",
+                "tradable": False,
+                "force_degraded": False,
+                "skipped_reason": "休市日跳过盘后链路",
+            }
+            self._save_status(summary)
+            return summary
 
         # 1. RPS 预计算
         self.results.append(self._run_step(
